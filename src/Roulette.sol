@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 // Imports
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
-import "./MockToken.sol";
+import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
+import "./RouletteVault.sol";
 import "./libraries/RouletteTypes.sol";
 
 /**
  * @title Roulette
- * @notice Main contract for the decentralized roulette game (Phase 1)
- * @dev Uses MockToken for Phase 1 testing, implements European roulette (0-36)
+ * @notice Main contract for the decentralized roulette game with Chainlink VRF
+ * @dev Players use credits (1:1 with USDC) for betting, vault holds all USDC
+ * Vault manages USDC deposits/withdrawals and credits via addCredits/removeCredits
+ * Implements European roulette (0-36)
  * Bets are always open except when calculating results (CALCULATING state)
- * This version uses a pseudo-random number generator - Phase 2 will integrate Chainlink VRF
+ * Uses Chainlink VRF v2 for verifiable random number generation
  */
-contract Roulette is Ownable, ReentrancyGuard, Pausable {
+contract Roulette is Ownable, ReentrancyGuard, Pausable, VRFConsumerBaseV2 {
     // Type declarations
     using RouletteTypes for *;
 
@@ -27,9 +31,25 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
     error NoActiveBets();
     error AlreadyCalculating();
     error SpinDelayNotMet(uint256 timeRemaining);
+    error InvalidRequestId();
+    error InsufficientCredits();
+    error InsufficientVaultLiquidity();
+    error InvalidAmount();
 
     // State variables
-    MockToken public immutable bettingToken;
+    // Chainlink VRF
+    VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
+    uint64 private immutable i_subscriptionId;
+    bytes32 private immutable i_gasLane;
+    uint32 private immutable i_callbackGasLimit;
+    uint16 private constant REQUEST_CONFIRMATIONS = 3;
+    uint32 private constant NUM_WORDS = 1;
+    
+    // Mapping from VRF requestId to roundId
+    mapping(uint256 => uint256) private s_requestIdToRoundId;
+    
+    // Roulette state
+    RouletteVault public immutable vault;
     RouletteTypes.RouletteState public state;
     uint256 public minBet;
     uint256 public maxBet;
@@ -38,6 +58,10 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
     uint256 public betIdCounter;
     uint256 public spinDelay;
     uint256 public lastSpinTimestamp;
+    
+    // Player credits system (1:1 with USDC)
+    mapping(address => uint256) public credits;
+    uint256 public totalCredits;
     
     mapping(uint256 => RouletteTypes.Round) public rounds;
     mapping(uint256 => uint256[]) public roundBets;
@@ -74,20 +98,33 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
     // Constructor
     /**
      * @notice Constructor
-     * @param _bettingToken Address of the betting token
+     * @param _vrfCoordinator Address of the Chainlink VRF Coordinator
+     * @param _subscriptionId Chainlink VRF subscription ID
+     * @param _gasLane Chainlink VRF gas lane (key hash)
+     * @param _callbackGasLimit Gas limit for the callback
+     * @param _vault Address of the RouletteVault
      * @param _minBet Minimum bet amount
      * @param _maxBet Maximum bet amount
      * @param _houseEdge House edge in basis points (270 = 2.7%)
      * @param _spinDelay Minimum delay between spins in seconds
      */
     constructor(
-        address _bettingToken,
+        address _vrfCoordinator,
+        uint64 _subscriptionId,
+        bytes32 _gasLane,
+        uint32 _callbackGasLimit,
+        address _vault,
         uint256 _minBet,
         uint256 _maxBet,
         uint256 _houseEdge,
         uint256 _spinDelay
-    ) Ownable(msg.sender) {
-        bettingToken = MockToken(_bettingToken);
+    ) Ownable(msg.sender) VRFConsumerBaseV2(_vrfCoordinator) {
+        i_vrfCoordinator = VRFCoordinatorV2Interface(_vrfCoordinator);
+        i_subscriptionId = _subscriptionId;
+        i_gasLane = _gasLane;
+        i_callbackGasLimit = _callbackGasLimit;
+        
+        vault = RouletteVault(_vault);
         minBet = _minBet;
         maxBet = _maxBet;
         houseEdge = _houseEdge;
@@ -100,7 +137,34 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
 
     // External functions
     /**
-     * @notice Place a bet in the current round
+     * @notice Add credits to a player (called by Vault)
+     * @dev Only callable by the vault when player deposits USDC
+     * @param player Player address
+     * @param amount Amount of credits to add
+     */
+    function addCredits(address player, uint256 amount) external {
+        if (msg.sender != address(vault)) revert InsufficientVaultLiquidity();
+        
+        credits[player] += amount;
+        totalCredits += amount;
+    }
+
+    /**
+     * @notice Remove credits from a player (called by Vault)
+     * @dev Only callable by the vault when player withdraws USDC
+     * @param player Player address
+     * @param amount Amount of credits to remove
+     */
+    function removeCredits(address player, uint256 amount) external {
+        if (msg.sender != address(vault)) revert InsufficientVaultLiquidity();
+        if (credits[player] < amount) revert InsufficientCredits();
+        
+        credits[player] -= amount;
+        totalCredits -= amount;
+    }
+
+    /**
+     * @notice Place a bet using credits
      * @param betType Type of bet
      * @param numbers Numbers to bet on (depends on bet type)
      * @param amount Amount to bet
@@ -115,8 +179,11 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
         if (!RouletteTypes.validateBet(betType, numbers)) {
             revert InvalidNumbers();
         }
+        if (credits[msg.sender] < amount) revert InsufficientCredits();
 
-        bettingToken.burn(msg.sender, amount);
+        // Burn credits from player
+        credits[msg.sender] -= amount;
+        totalCredits -= amount;
 
         betIdCounter++;
         bets[betIdCounter] = RouletteTypes.Bet({
@@ -154,9 +221,9 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Request spin - changes state to CALCULATING and generates winning number
-     * @dev In Phase 1, uses pseudo-random. Phase 2 will use Chainlink VRF
-     * After settling bets, automatically returns to OPEN state
+     * @notice Request spin - changes state to CALCULATING and requests random number from Chainlink VRF
+     * @dev Uses Chainlink VRF v2 for verifiable random number generation
+     * The winning number will be determined in fulfillRandomWords callback
      */
     function spin() external onlyOwner nonReentrant whenNotPaused {
         if (state != RouletteTypes.RouletteState.OPEN) revert AlreadyCalculating();
@@ -170,44 +237,24 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
         
         if (roundBets[currentRoundId].length == 0) revert NoActiveBets();
 
+        // Change state to CALCULATING
         state = RouletteTypes.RouletteState.CALCULATING;
         emit StateChanged(RouletteTypes.RouletteState.CALCULATING);
+
+        // Request random number from Chainlink VRF
+        uint256 requestId = i_vrfCoordinator.requestRandomWords(
+            i_gasLane,
+            i_subscriptionId,
+            REQUEST_CONFIRMATIONS,
+            i_callbackGasLimit,
+            NUM_WORDS
+        );
+
+        // Store mapping of requestId to roundId
+        s_requestIdToRoundId[requestId] = currentRoundId;
+        rounds[currentRoundId].requestId = requestId;
+
         emit SpinRequested(currentRoundId, block.timestamp);
-
-        RouletteTypes.Round storage round = rounds[currentRoundId];
-
-        uint8 winningNumber = uint8(
-            uint256(
-                keccak256(
-                    abi.encodePacked(
-                        block.timestamp,
-                        block.prevrandao,
-                        msg.sender,
-                        currentRoundId,
-                        blockhash(block.number - 1)
-                    )
-                )
-            ) % 37
-        );
-
-        round.winningNumber = winningNumber;
-        round.winningColor = RouletteTypes.getNumberColor(winningNumber);
-        round.completed = true;
-
-        _settleBets(currentRoundId, winningNumber);
-
-        emit SpinCompleted(
-            currentRoundId,
-            winningNumber,
-            round.winningColor,
-            round.totalPayout
-        );
-
-        lastSpinTimestamp = block.timestamp;
-
-        currentRoundId++;
-        state = RouletteTypes.RouletteState.OPEN;
-        emit StateChanged(RouletteTypes.RouletteState.OPEN);
     }
 
     /**
@@ -282,6 +329,41 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
 
     // Internal functions
     /**
+     * @notice Callback function called by Chainlink VRF with the random number
+     * @param requestId The VRF request ID
+     * @param randomWords Array of random numbers (we only use the first one)
+     */
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+        uint256 roundId = s_requestIdToRoundId[requestId];
+        if (roundId == 0) revert InvalidRequestId();
+
+        RouletteTypes.Round storage round = rounds[roundId];
+        
+        // Convert random number to roulette number (0-36)
+        uint8 winningNumber = uint8(randomWords[0] % 37);
+
+        round.winningNumber = winningNumber;
+        round.winningColor = RouletteTypes.getNumberColor(winningNumber);
+        round.completed = true;
+
+        _settleBets(roundId, winningNumber);
+
+        emit SpinCompleted(
+            roundId,
+            winningNumber,
+            round.winningColor,
+            round.totalPayout
+        );
+
+        lastSpinTimestamp = block.timestamp;
+
+        // Move to next round and reopen betting
+        currentRoundId++;
+        state = RouletteTypes.RouletteState.OPEN;
+        emit StateChanged(RouletteTypes.RouletteState.OPEN);
+    }
+
+    /**
      * @notice Settle all bets for a round
      * @param roundId Round ID to settle
      * @param winningNumber The winning number
@@ -289,6 +371,7 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
     function _settleBets(uint256 roundId, uint8 winningNumber) internal {
         uint256[] memory betIds = roundBets[roundId];
         uint256 totalPayout = 0;
+        uint256 totalLoss = 0;
 
         for (uint256 i = 0; i < betIds.length; i++) {
             uint256 betId = betIds[i];
@@ -306,18 +389,38 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
                 bet.payout = payout;
                 totalPayout += payout;
 
-                bettingToken.mint(bet.player, payout);
+                // Check vault has liquidity and record payout stats
+                vault.payout(bet.player, payout);
+                
+                // Credit player with winnings (USDC stays in vault)
+                credits[bet.player] += payout;
+                totalCredits += payout;
 
                 playerStats[bet.player].totalWon += payout;
 
                 emit BetSettled(betId, bet.player, true, payout);
             } else {
+                // Bet was lost, credits were already burned in placeBet()
+                totalLoss += bet.amount;
+                
                 playerStats[bet.player].totalLost += bet.amount;
                 emit BetSettled(betId, bet.player, false, 0);
             }
         }
 
         rounds[roundId].totalPayout = totalPayout;
+        
+        // Record stats in vault
+        vault.recordBet(rounds[roundId].totalBets);
+        
+        if (totalPayout > rounds[roundId].totalBets) {
+            // Vault lost money
+            uint256 loss = totalPayout - rounds[roundId].totalBets;
+            vault.recordLoss(loss);
+        } else {
+            // Vault profited
+            vault.recordProfit(totalLoss);
+        }
     }
 
     // View functions
@@ -363,5 +466,46 @@ contract Roulette is Ownable, ReentrancyGuard, Pausable {
      */
     function getState() external view returns (RouletteTypes.RouletteState) {
         return state;
+    }
+
+    /**
+     * @notice Get VRF configuration
+     * @return vrfCoordinator Address of VRF Coordinator
+     * @return subscriptionId Subscription ID
+     * @return gasLane Gas lane (key hash)
+     * @return callbackGasLimit Callback gas limit
+     */
+    function getVRFConfig()
+        external
+        view
+        returns (address vrfCoordinator, uint64 subscriptionId, bytes32 gasLane, uint32 callbackGasLimit)
+    {
+        return (address(i_vrfCoordinator), i_subscriptionId, i_gasLane, i_callbackGasLimit);
+    }
+
+    /**
+     * @notice Get round ID from VRF request ID
+     * @param requestId VRF request ID
+     * @return Round ID
+     */
+    function getRequestIdToRoundId(uint256 requestId) external view returns (uint256) {
+        return s_requestIdToRoundId[requestId];
+    }
+
+    /**
+     * @notice Get player's credit balance
+     * @param player Player address
+     * @return Credit balance
+     */
+    function getCredits(address player) external view returns (uint256) {
+        return credits[player];
+    }
+
+    /**
+     * @notice Get total credits in circulation
+     * @return Total credits
+     */
+    function getTotalCredits() external view returns (uint256) {
+        return totalCredits;
     }
 }
