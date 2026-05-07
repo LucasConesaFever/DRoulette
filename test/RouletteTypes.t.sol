@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
-import "forge-std/Test.sol";
-import "../src/libraries/RouletteTypes.sol";
+import {Test} from "forge-std/Test.sol";
+import {RouletteTypes} from "../src/libraries/RouletteTypes.sol";
 
 /**
  * @title RouletteTypesTest

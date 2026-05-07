@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.19;
 
-import "forge-std/Script.sol";
-import "../src/Roulette.sol";
-import "../src/RouletteVault.sol";
-import "../src/mocks/MockUSDC.sol";
-import "./HelperConfig.s.sol";
+import {Script, console} from "forge-std/Script.sol";
+import {Roulette} from "../src/Roulette.sol";
+import {RouletteVault} from "../src/RouletteVault.sol";
+import {HelperConfig} from "./HelperConfig.s.sol";
 
 /**
  * @title DeployRoulette
  * @notice Deployment script for DWheel Roulette Phase 2 with Vault and Credits
  * @dev Deploys MockUSDC (or uses real USDC), RouletteVault, and Roulette
+ *      Uses Chainlink VRF V2.5
  */
 contract DeployRoulette is Script {
     // Default configuration values
@@ -26,26 +26,25 @@ contract DeployRoulette is Script {
         (
             address vrfCoordinator,
             bytes32 gasLane,
-            uint64 subscriptionId,
+            uint256 subscriptionId,
             uint32 callbackGasLimit,
             , // link
-            address usdc
+            address usdc,
+            bool nativePayment
         ) = helperConfig.activeNetworkConfig();
 
-        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
-        address deployer = vm.addr(deployerPrivateKey);
-
         console.log("===========================================");
-        console.log("DWheel Roulette Phase 2 Deployment");
+        console.log("DWheel Roulette Phase 2 Deployment (VRF V2.5)");
         console.log("===========================================");
-        console.log("Deployer:", deployer);
         console.log("Chain ID:", block.chainid);
         console.log("VRF Coordinator:", vrfCoordinator);
         console.log("Subscription ID:", subscriptionId);
         console.log("USDC Address:", usdc);
+        console.log("Native Payment:", nativePayment);
         console.log("===========================================");
 
-        vm.startBroadcast(deployerPrivateKey);
+        // Start broadcast - uses --account flag from CLI or PRIVATE_KEY env var
+        vm.startBroadcast();
 
         // 1. USDC is already deployed (from config or mock)
         console.log("\n1. Using USDC at:", usdc);
@@ -66,13 +65,14 @@ contract DeployRoulette is Script {
         console.log("RouletteVault deployed at:", address(vault));
         console.log("Max capacity:", MAX_VAULT_CAPACITY / 1e6, "USDC");
 
-        // 3. Deploy Roulette with VRF and Vault
-        console.log("\n3. Deploying Roulette with VRF...");
+        // 3. Deploy Roulette with VRF V2.5 and Vault
+        console.log("\n3. Deploying Roulette with VRF V2.5...");
         Roulette roulette = new Roulette(
             vrfCoordinator,
             subscriptionId,
             gasLane,
             callbackGasLimit,
+            nativePayment,
             address(vault),
             MIN_BET,
             MAX_BET,
@@ -95,7 +95,7 @@ contract DeployRoulette is Script {
 
         // Print summary
         console.log("\n===========================================");
-        console.log("Deployment Summary - Phase 2");
+        console.log("Deployment Summary - Phase 2 (VRF V2.5)");
         console.log("===========================================");
         console.log("USDC:", usdc);
         console.log("RouletteVault:", address(vault));
@@ -104,12 +104,12 @@ contract DeployRoulette is Script {
         console.log("===========================================");
         console.log("\nNEXT STEPS:");
         if (subscriptionId == 0) {
-            console.log("1. Create VRF subscription:");
-            console.log("   forge script script/Interactions.s.sol:CreateSubscription --rpc-url $RPC_URL --broadcast");
-            console.log("2. Fund the subscription:");
-            console.log("   forge script script/Interactions.s.sol:FundSubscription --rpc-url $RPC_URL --broadcast");
+            console.log("1. Create VRF V2.5 subscription:");
+            console.log("   forge script script/Interactions.s.sol:CreateSubscription --rpc-url $RPC_URL --account <name> --broadcast");
+            console.log("2. Fund the subscription at https://vrf.chain.link or with script:");
+            console.log("   forge script script/Interactions.s.sol:FundSubscription --rpc-url $RPC_URL --account <name> --broadcast");
             console.log("3. Add Roulette as consumer:");
-            console.log("   forge script script/Interactions.s.sol:AddConsumer --rpc-url $RPC_URL --broadcast");
+            console.log("   forge script script/Interactions.s.sol:AddConsumer --rpc-url $RPC_URL --account <name> --broadcast");
         }
         console.log("\nPhase 2 System:");
         console.log("- Players: vault.depositCredits(USDC) -> get credits (1:1)");

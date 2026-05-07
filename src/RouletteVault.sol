@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title IRouletteCredits
@@ -29,11 +31,14 @@ interface IRouletteCredits {
  *      - lpCapital tracks only USDC that generated shares
  */
 contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     // Errors
     error UnauthorizedCaller();
     error InsufficientVaultBalance();
     error MaxCapacityReached();
     error InvalidAmount();
+    error RouletteNotSet();
 
     // State variables
     address public roulette;
@@ -46,6 +51,7 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
     uint256 public totalBetsPlaced;
     uint256 public totalPayouts;
     uint256 public totalProfit;
+    uint256 public totalLoss;
     
     // Events
     event RouletteSet(address indexed roulette);
@@ -59,8 +65,12 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
 
     // Modifiers
     modifier onlyRoulette() {
-        if (msg.sender != roulette) revert UnauthorizedCaller();
+        _checkRoulette();
         _;
+    }
+
+    function _checkRoulette() internal view {
+        if (msg.sender != roulette) revert UnauthorizedCaller();
     }
 
     /**
@@ -107,47 +117,53 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
      * @notice Deposit assets and receive shares (for liquidity providers)
      * @dev Overrides ERC4626 to add capacity check based on LP capital only
      */
-    function deposit(uint256 assets, address receiver) 
-        public 
-        override 
-        nonReentrant 
-        returns (uint256) 
+    function deposit(uint256 assets, address receiver)
+        public
+        override
+        nonReentrant
+        returns (uint256)
     {
         // Check capacity only for LP deposits (shares)
-        uint256 newLPCapital = lpCapital + assets;
-        if (newLPCapital > maxCapacity) revert MaxCapacityReached();
-        
-        // Update LP capital tracking
-        lpCapital = newLPCapital;
-        
-        return super.deposit(assets, receiver);
+        uint256 newLpCapital = lpCapital + assets;
+        if (newLpCapital > maxCapacity) revert MaxCapacityReached();
+
+        // Call parent first (calculates shares based on current totalAssets)
+        uint256 shares = super.deposit(assets, receiver);
+
+        // Update LP capital tracking AFTER deposit
+        lpCapital = newLpCapital;
+
+        return shares;
     }
 
     /**
      * @notice Mint shares and receive assets (for liquidity providers)
      * @dev Overrides ERC4626 to add capacity check based on LP capital only
      */
-    function mint(uint256 shares, address receiver) 
-        public 
-        override 
-        nonReentrant 
-        returns (uint256) 
+    function mint(uint256 shares, address receiver)
+        public
+        override
+        nonReentrant
+        returns (uint256)
     {
         uint256 assets = previewMint(shares);
-        
+
         // Check capacity only for LP deposits (shares)
-        uint256 newLPCapital = lpCapital + assets;
-        if (newLPCapital > maxCapacity) revert MaxCapacityReached();
-        
-        // Update LP capital tracking
-        lpCapital = newLPCapital;
-        
-        return super.mint(shares, receiver);
+        uint256 newLpCapital = lpCapital + assets;
+        if (newLpCapital > maxCapacity) revert MaxCapacityReached();
+
+        // Call parent first (transfers assets)
+        uint256 actualAssets = super.mint(shares, receiver);
+
+        // Update LP capital tracking AFTER mint
+        lpCapital = lpCapital + actualAssets;
+
+        return actualAssets;
     }
 
     /**
      * @notice Withdraw assets by burning shares (for liquidity providers)
-     * @dev Overrides ERC4626 to update LP capital tracking
+     * @dev Reduces lpCapital, totalProfit, totalLoss proportionally by shares redeemed
      */
     function withdraw(uint256 assets, address receiver, address owner)
         public
@@ -155,15 +171,21 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
         nonReentrant
         returns (uint256)
     {
-        // Decrease LP capital tracking
-        lpCapital -= assets;
-        
-        return super.withdraw(assets, receiver, owner);
+        // Get total supply BEFORE withdrawal (shares will be burned in super.withdraw)
+        uint256 supplyBefore = totalSupply();
+
+        // Call parent (burns shares, transfers assets)
+        uint256 shares = super.withdraw(assets, receiver, owner);
+
+        // Reduce lpCapital, totalProfit, totalLoss proportionally by shares/supplyBefore
+        _reduceProportionally(shares, supplyBefore);
+
+        return shares;
     }
 
     /**
      * @notice Redeem shares for assets (for liquidity providers)
-     * @dev Overrides ERC4626 to update LP capital tracking
+     * @dev Reduces lpCapital, totalProfit, totalLoss proportionally by shares redeemed
      */
     function redeem(uint256 shares, address receiver, address owner)
         public
@@ -171,12 +193,49 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
         nonReentrant
         returns (uint256)
     {
-        uint256 assets = previewRedeem(shares);
-        
-        // Decrease LP capital tracking
-        lpCapital -= assets;
-        
-        return super.redeem(shares, receiver, owner);
+        // Get total supply BEFORE redemption (shares will be burned in super.redeem)
+        uint256 supplyBefore = totalSupply();
+
+        // Call parent (burns shares, transfers assets)
+        uint256 assets = super.redeem(shares, receiver, owner);
+
+        // Reduce lpCapital, totalProfit, totalLoss proportionally by shares/supplyBefore
+        _reduceProportionally(shares, supplyBefore);
+
+        return assets;
+    }
+
+    /**
+     * @notice Reduce lpCapital, totalProfit, totalLoss proportionally when LP exits
+     * @dev Called after shares are burned to maintain correct accounting
+     * @param shares Number of shares being redeemed
+     * @param supplyBefore Total supply before redemption
+     */
+    function _reduceProportionally(uint256 shares, uint256 supplyBefore) internal {
+        if (supplyBefore == 0) return;
+
+        // Reduce lpCapital proportionally
+        uint256 lpReduction = (lpCapital * shares) / supplyBefore;
+        lpCapital -= lpReduction;
+
+        // Reduce totalProfit proportionally (LP takes their share of profits)
+        if (totalProfit > 0) {
+            uint256 profitReduction = (totalProfit * shares) / supplyBefore;
+            totalProfit -= profitReduction;
+        }
+
+        // Reduce totalLoss proportionally (LP absorbs their share of losses)
+        if (totalLoss > 0) {
+            uint256 lossReduction = (totalLoss * shares) / supplyBefore;
+            totalLoss -= lossReduction;
+        }
+
+        // Clean up any dust when all LPs exit
+        if (totalSupply() == 0) {
+            lpCapital = 0;
+            totalProfit = 0;
+            totalLoss = 0;
+        }
     }
 
     // ============ Player Credits Functions ============
@@ -188,14 +247,14 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
      */
     function depositCredits(uint256 amount) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
-        if (roulette == address(0)) revert UnauthorizedCaller();
-        
+        if (roulette == address(0)) revert RouletteNotSet();
+
         // Transfer USDC from player to vault
-        IERC20(asset()).transferFrom(msg.sender, address(this), amount);
-        
+        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
+
         // Call Roulette to credit player (1:1)
         IRouletteCredits(roulette).addCredits(msg.sender, amount);
-        
+
         emit CreditsDeposited(msg.sender, amount);
     }
 
@@ -205,13 +264,13 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
      */
     function withdrawCredits(uint256 amount) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
-        if (roulette == address(0)) revert UnauthorizedCaller();
+        if (roulette == address(0)) revert RouletteNotSet();
         
         // Call Roulette to deduct credits
         IRouletteCredits(roulette).removeCredits(msg.sender, amount);
         
         // Transfer USDC back to player
-        IERC20(asset()).transfer(msg.sender, amount);
+        IERC20(asset()).safeTransfer(msg.sender, amount);
         
         emit CreditsWithdrawn(msg.sender, amount);
     }
@@ -249,28 +308,62 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
 
     /**
      * @notice Record profit from losing bets (called by Roulette)
+     * @dev First offsets any accumulated losses, then adds to profit
      * @param amount Profit amount
      */
     function recordProfit(uint256 amount) external onlyRoulette {
+        // First offset any accumulated losses
+        if (totalLoss > 0) {
+            if (amount >= totalLoss) {
+                amount -= totalLoss;
+                totalLoss = 0;
+            } else {
+                totalLoss -= amount;
+                amount = 0;
+            }
+        }
+        // Add remaining profit
         totalProfit += amount;
         emit ProfitRecorded(amount);
     }
 
     /**
      * @notice Record loss from winning bets (called by Roulette)
+     * @dev First deducts from profit, then accumulates as loss
      * @param amount Loss amount
      */
     function recordLoss(uint256 amount) external onlyRoulette {
-        // totalProfit can go negative (represented as totalProfit - amount)
-        if (amount > totalProfit) {
-            totalProfit = 0;
-        } else {
-            totalProfit -= amount;
+        // First deduct from any accumulated profit
+        if (totalProfit > 0) {
+            if (amount <= totalProfit) {
+                totalProfit -= amount;
+                amount = 0;
+            } else {
+                amount -= totalProfit;
+                totalProfit = 0;
+            }
         }
+        // Remaining loss accumulates
+        totalLoss += amount;
         emit LossRecorded(amount);
     }
 
     // ============ View Functions ============
+
+    /**
+     * @notice Override totalAssets to count LP capital + profits - losses
+     * @dev This ensures share calculations exclude player credits
+     *      LPs earn yield from house edge profits and bear losses
+     * @return Total assets attributable to LP shares
+     */
+    function totalAssets() public view override returns (uint256) {
+        uint256 assets = lpCapital + totalProfit;
+        // Subtract losses, but floor at 0
+        if (totalLoss >= assets) {
+            return 0;
+        }
+        return assets - totalLoss;
+    }
 
     /**
      * @notice Get available liquidity in the vault
@@ -282,29 +375,32 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
 
     /**
      * @notice Get vault statistics
-     * @return _totalAssets Total assets in vault (LP capital + player credits)
-     * @return _lpCapital LP capital only (generates shares)
+     * @return _totalAssets Total assets for share calculation (LP capital + profits - losses)
+     * @return _lpCapital LP capital only (original deposits)
      * @return _totalBets Total bets placed
      * @return _totalPayouts Total payouts made
-     * @return _totalProfit Total profit accumulated
+     * @return _totalProfit Total profit accumulated (house edge earnings)
+     * @return _totalLoss Total loss accumulated (player winnings)
      */
-    function getVaultStats() 
-        external 
-        view 
+    function getVaultStats()
+        external
+        view
         returns (
             uint256 _totalAssets,
             uint256 _lpCapital,
             uint256 _totalBets,
             uint256 _totalPayouts,
-            uint256 _totalProfit
-        ) 
+            uint256 _totalProfit,
+            uint256 _totalLoss
+        )
     {
         return (
             totalAssets(),
             lpCapital,
             totalBetsPlaced,
             totalPayouts,
-            totalProfit
+            totalProfit,
+            totalLoss
         );
     }
 
@@ -314,7 +410,7 @@ contract RouletteVault is ERC4626, Ownable, ReentrancyGuard {
      * @return _maxCapacity Maximum LP capacity
      * @return _availableCapacity Remaining capacity for LP deposits
      */
-    function getLPCapacityInfo()
+    function getLpCapacityInfo()
         external
         view
         returns (

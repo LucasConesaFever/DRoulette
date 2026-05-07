@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
 import {Script, console} from "forge-std/Script.sol";
 import {HelperConfig} from "./HelperConfig.s.sol";
-import {VRFCoordinatorV2Mock} from "../src/mocks/VRFCoordinatorV2Mock.sol";
+import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
 import {LinkToken} from "../test/mocks/LinkToken.sol";
 import {DevOpsTools} from "lib/foundry-devops/src/DevOpsTools.sol";
 import {RouletteVault} from "../src/RouletteVault.sol";
@@ -16,25 +16,25 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  */
 
 contract CreateSubscription is Script {
-    function createSubscriptionUsingConfig() public returns (uint64) {
+    function createSubscriptionUsingConfig() public returns (uint256) {
         HelperConfig helperConfig = new HelperConfig();
-        (address vrfCoordinator,,,,,) = helperConfig.activeNetworkConfig();
+        (address vrfCoordinator,,,,,,) = helperConfig.activeNetworkConfig();
         return createSubscription(vrfCoordinator);
     }
 
-    function createSubscription(address vrfCoordinator) public returns (uint64) {
+    function createSubscription(address vrfCoordinator) public returns (uint256) {
         console.log("Creating subscription on ChainId: ", block.chainid);
-        
+
         vm.startBroadcast();
-        uint64 subId = VRFCoordinatorV2Mock(vrfCoordinator).createSubscription();
+        uint256 subId = VRFCoordinatorV2_5Mock(vrfCoordinator).createSubscription();
         vm.stopBroadcast();
-        
+
         console.log("Your sub Id is: ", subId);
         console.log("Please update subscriptionId in HelperConfig.s.sol");
         return subId;
     }
 
-    function run() external returns (uint64) {
+    function run() external returns (uint256) {
         return createSubscriptionUsingConfig();
     }
 }
@@ -44,19 +44,19 @@ contract FundSubscription is Script {
 
     function fundSubscriptionUsingConfig() public {
         HelperConfig helperConfig = new HelperConfig();
-        (address vrfCoordinator,, uint64 subId,, address link,) = helperConfig.activeNetworkConfig();
+        (address vrfCoordinator,, uint256 subId,, address link,,) = helperConfig.activeNetworkConfig();
         fundSubscription(vrfCoordinator, subId, link);
     }
 
-    function fundSubscription(address vrfCoordinator, uint64 subId, address link) public {
+    function fundSubscription(address vrfCoordinator, uint256 subId, address link) public {
         console.log("Funding subscription: ", subId);
         console.log("Using vrfCoordinator: ", vrfCoordinator);
         console.log("On ChainId: ", block.chainid);
-        
+
         if (block.chainid == 31337) {
             // Local chain - use mock
             vm.startBroadcast();
-            VRFCoordinatorV2Mock(vrfCoordinator).fundSubscription(subId, FUND_AMOUNT);
+            VRFCoordinatorV2_5Mock(vrfCoordinator).fundSubscription(subId, FUND_AMOUNT);
             vm.stopBroadcast();
         } else {
             // Testnet - use LINK token
@@ -72,19 +72,19 @@ contract FundSubscription is Script {
 }
 
 contract AddConsumer is Script {
-    function addConsumer(address roulette, address vrfCoordinator, uint64 subId) public {
+    function addConsumer(address roulette, address vrfCoordinator, uint256 subId) public {
         console.log("Adding consumer contract: ", roulette);
         console.log("Using vrfCoordinator: ", vrfCoordinator);
         console.log("On ChainId: ", block.chainid);
-        
+
         vm.startBroadcast();
-        VRFCoordinatorV2Mock(vrfCoordinator).addConsumer(subId, roulette);
+        VRFCoordinatorV2_5Mock(vrfCoordinator).addConsumer(subId, roulette);
         vm.stopBroadcast();
     }
 
     function addConsumerUsingConfig(address roulette) public {
         HelperConfig helperConfig = new HelperConfig();
-        (address vrfCoordinator,, uint64 subId,,,) = helperConfig.activeNetworkConfig();
+        (address vrfCoordinator,, uint256 subId,,,,) = helperConfig.activeNetworkConfig();
         addConsumer(roulette, vrfCoordinator, subId);
     }
 
@@ -257,17 +257,19 @@ contract GetVaultInfo is Script {
         // Statistics
         console.log("\n--- Statistics ---");
         (
-            uint256 totalBetsPlaced,
+            uint256 totalAssets,
+            uint256 lpCapital,
             uint256 totalBetsAmount,
             uint256 totalPayouts,
-            uint256 totalLosses,
-            uint256 totalProfit
+            uint256 totalProfit,
+            uint256 totalLoss
         ) = vault.getVaultStats();
-        console.log("Total Bets Placed:", totalBetsPlaced);
+        console.log("Total Assets:", totalAssets / 1e6, "USDC");
+        console.log("LP Capital:", lpCapital / 1e6, "USDC");
         console.log("Total Bets Amount:", totalBetsAmount / 1e6, "USDC");
         console.log("Total Payouts:", totalPayouts / 1e6, "USDC");
-        console.log("Total Losses:", totalLosses / 1e6, "USDC");
         console.log("Total Profit:", totalProfit / 1e6, "USDC");
+        console.log("Total Loss:", totalLoss / 1e6, "USDC");
         
         // Risk Management
         console.log("\n--- Risk Management ---");

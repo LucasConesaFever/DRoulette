@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.19;
 
-import "forge-std/Test.sol";
-import "../src/Roulette.sol";
-import "../src/RouletteVault.sol";
-import "../src/mocks/MockUSDC.sol";
-import "../src/libraries/RouletteTypes.sol";
-import "../src/mocks/VRFCoordinatorV2Mock.sol";
+import {Test} from "forge-std/Test.sol";
+import {Roulette} from "../src/Roulette.sol";
+import {RouletteVault} from "../src/RouletteVault.sol";
+import {MockUSDC} from "../src/mocks/MockUSDC.sol";
+import {RouletteTypes} from "../src/libraries/RouletteTypes.sol";
+import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * @title RouletteTest
  * @notice Comprehensive tests for the Roulette contract with Phase 2: Vault + Credits system
+ * @dev Uses Chainlink VRF V2.5
  */
 contract RouletteTest is Test {
     Roulette public roulette;
     RouletteVault public vault;
     MockUSDC public usdc;
-    VRFCoordinatorV2Mock public vrfCoordinator;
+    VRFCoordinatorV2_5Mock public vrfCoordinator;
 
     address public owner = address(1);
     address public lp1 = address(2);
@@ -32,11 +35,12 @@ contract RouletteTest is Test {
     uint256 constant INITIAL_USDC_SUPPLY = 1_000_000e6; // 1M USDC
     uint256 constant MAX_VAULT_CAPACITY = 10_000_000e6; // 10M USDC
 
-    // VRF Configuration
-    uint96 constant BASE_FEE = 0.25 ether;
+    // VRF V2.5 Configuration
+    uint96 constant BASE_FEE = 0.1 ether;
     uint96 constant GAS_PRICE_LINK = 1e9;
-    uint64 public subscriptionId;
-    bytes32 constant GAS_LANE = 0x474e34a077df58807dbe9c96d3c009b23b3c6d0cce433e59bbf5b34f823bc56c;
+    int256 constant WEI_PER_UNIT_LINK = 4e15;
+    uint256 public subscriptionId;
+    bytes32 constant GAS_LANE = 0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae;
     uint32 constant CALLBACK_GAS_LIMIT = 500000;
 
     // Events
@@ -58,19 +62,49 @@ contract RouletteTest is Test {
         uint256 totalPayout
     );
 
+    // ============ Modifiers ============
+
+    modifier withLPLiquidity(address lp, uint256 amount) {
+        vm.startPrank(lp);
+        usdc.approve(address(vault), amount);
+        vault.deposit(amount, lp);
+        vm.stopPrank();
+        _;
+    }
+
+    modifier withPlayerCredits(address player, uint256 amount) {
+        vm.startPrank(player);
+        usdc.approve(address(vault), amount);
+        vault.depositCredits(amount);
+        vm.stopPrank();
+        _;
+    }
+
+    modifier asPlayer(address player) {
+        vm.startPrank(player);
+        _;
+        vm.stopPrank();
+    }
+
+    modifier asOwner() {
+        vm.prank(owner);
+        _;
+    }
+
     function setUp() public {
         vm.startPrank(owner);
-        
-        // Deploy VRF Coordinator Mock
-        vrfCoordinator = new VRFCoordinatorV2Mock(BASE_FEE, GAS_PRICE_LINK);
-        
-        // Create and fund subscription
+
+        // Deploy VRF V2.5 Coordinator Mock
+        vrfCoordinator = new VRFCoordinatorV2_5Mock(BASE_FEE, GAS_PRICE_LINK, WEI_PER_UNIT_LINK);
+
+        // Create and fund subscription with LINK tokens
+        // Note: LINK payment costs are ~250x higher than native in the mock due to WEI_PER_UNIT_LINK conversion
         subscriptionId = vrfCoordinator.createSubscription();
-        vrfCoordinator.fundSubscription(subscriptionId, 3 ether);
-        
+        vrfCoordinator.fundSubscription(subscriptionId, 1000 ether);
+
         // Deploy MockUSDC
         usdc = new MockUSDC(INITIAL_USDC_SUPPLY);
-        
+
         // Deploy RouletteVault
         vault = new RouletteVault(
             address(usdc),
@@ -78,13 +112,14 @@ contract RouletteTest is Test {
             "DWHEEL",
             MAX_VAULT_CAPACITY
         );
-        
-        // Deploy Roulette with VRF
+
+        // Deploy Roulette with VRF V2.5 (using LINK for payment)
         roulette = new Roulette(
             address(vrfCoordinator),
             subscriptionId,
             GAS_LANE,
             CALLBACK_GAS_LIMIT,
+            false, // nativePayment = false means pay with LINK
             address(vault),
             MIN_BET,
             MAX_BET,
@@ -102,18 +137,18 @@ contract RouletteTest is Test {
 
         // Distribute USDC to test accounts
         vm.startPrank(owner);
-        usdc.transfer(lp1, 100_000e6);
-        usdc.transfer(lp2, 100_000e6);
-        usdc.transfer(player1, 10_000e6);
-        usdc.transfer(player2, 10_000e6);
-        usdc.transfer(player3, 10_000e6);
+        require(usdc.transfer(lp1, 100_000e6), "Transfer to lp1 failed");
+        require(usdc.transfer(lp2, 100_000e6), "Transfer to lp2 failed");
+        require(usdc.transfer(player1, 10_000e6), "Transfer to player1 failed");
+        require(usdc.transfer(player2, 10_000e6), "Transfer to player2 failed");
+        require(usdc.transfer(player3, 10_000e6), "Transfer to player3 failed");
         vm.stopPrank();
     }
 
     // ============ Helper Functions ============
 
     // Helper function to fulfill VRF request
-    function fulfillVRF(uint256 requestId) internal {
+    function fulfillVrf(uint256 requestId) internal {
         vrfCoordinator.fulfillRandomWords(requestId, address(roulette));
     }
 
@@ -131,7 +166,7 @@ contract RouletteTest is Test {
         requestId = round.requestId;
         
         // Fulfill the VRF request
-        fulfillVRF(requestId);
+        fulfillVrf(requestId);
         
         return requestId;
     }
@@ -150,11 +185,12 @@ contract RouletteTest is Test {
         assertTrue(roulette.state() == RouletteTypes.RouletteState.OPEN);
         
         // Check VRF config
-        (address vrfCoord, uint64 subId, bytes32 gasLane, uint32 gasLimit) = roulette.getVRFConfig();
+        (address vrfCoord, uint256 subId, bytes32 gasLane, uint32 gasLimit, bool nativePayment) = roulette.getVrfConfig();
         assertEq(vrfCoord, address(vrfCoordinator));
         assertEq(subId, subscriptionId);
         assertEq(gasLane, GAS_LANE);
         assertEq(gasLimit, CALLBACK_GAS_LIMIT);
+        assertFalse(nativePayment); // Using LINK, not native ETH
     }
 
     // ============ Vault LP Tests ============
@@ -559,7 +595,7 @@ contract RouletteTest is Test {
         assertTrue(requestId > 0);
 
         // Fulfill VRF request
-        fulfillVRF(requestId);
+        fulfillVrf(requestId);
 
         // Check state changed back to OPEN after fulfillment
         assertTrue(roulette.state() == RouletteTypes.RouletteState.OPEN);
@@ -647,7 +683,7 @@ contract RouletteTest is Test {
         vm.stopPrank();
 
         vm.prank(player2);
-        vm.expectRevert();
+        vm.expectRevert("Only callable by owner");
         roulette.spin();
     }
 
@@ -715,7 +751,7 @@ contract RouletteTest is Test {
         roulette.placeBet(RouletteTypes.BetType.STRAIGHT_UP, numbers, MIN_BET);
 
         vm.prank(owner);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Roulette.SpinDelayNotMet.selector, SPIN_DELAY));
         roulette.spin();
     }
 
@@ -874,7 +910,7 @@ contract RouletteTest is Test {
         
         // Player deposits and places bet
         vm.startPrank(player1);
-        uint256 initialUSDC = usdc.balanceOf(player1);
+        uint256 initialUsdc = usdc.balanceOf(player1);
         usdc.approve(address(vault), 100e6);
         vault.depositCredits(100e6);
         
@@ -902,10 +938,10 @@ contract RouletteTest is Test {
         
         vault.withdrawCredits(playerCredits);
         
-        uint256 finalUSDC = usdc.balanceOf(player1);
+        uint256 finalUsdc = usdc.balanceOf(player1);
         
         // Final USDC should equal initial - deposit + withdrawn credits
-        assertEq(finalUSDC, initialUSDC - 100e6 + playerCredits, "USDC balance should match");
+        assertEq(finalUsdc, initialUsdc - 100e6 + playerCredits, "USDC balance should match");
         vm.stopPrank();
     }
 
@@ -1048,7 +1084,8 @@ contract RouletteTest is Test {
             uint256 lpCapital,
             uint256 totalBets,
             ,
-            
+            ,
+
         ) = vault.getVaultStats();
         
         assertEq(lpCapital, 100_000e6, "LP capital tracked");
@@ -1068,7 +1105,7 @@ contract RouletteTest is Test {
             uint256 lpCapital,
             uint256 maxCapacity,
             uint256 availableCapacity
-        ) = vault.getLPCapacityInfo();
+        ) = vault.getLpCapacityInfo();
         
         assertEq(lpCapital, depositAmount, "LP capital correct");
         assertEq(maxCapacity, MAX_VAULT_CAPACITY, "Max capacity correct");
@@ -1079,14 +1116,14 @@ contract RouletteTest is Test {
 
     function testOnlyVaultCanAddCredits() public {
         vm.startPrank(player1);
-        vm.expectRevert(Roulette.InsufficientVaultLiquidity.selector);
+        vm.expectRevert(Roulette.OnlyVault.selector);
         roulette.addCredits(player1, 100e6);
         vm.stopPrank();
     }
 
     function testOnlyVaultCanRemoveCredits() public {
         vm.startPrank(player1);
-        vm.expectRevert(Roulette.InsufficientVaultLiquidity.selector);
+        vm.expectRevert(Roulette.OnlyVault.selector);
         roulette.removeCredits(player1, 100e6);
         vm.stopPrank();
     }
@@ -1129,7 +1166,7 @@ contract RouletteTest is Test {
 
     function test_SetMinBet_RevertIf_NotOwner() public {
         vm.prank(player1);
-        vm.expectRevert();
+        vm.expectRevert("Only callable by owner");
         roulette.setMinBet(2e6);
     }
 
@@ -1172,7 +1209,7 @@ contract RouletteTest is Test {
         uint8[] memory numbers = new uint8[](1);
         numbers[0] = 5;
 
-        vm.expectRevert();
+        vm.expectRevert(Pausable.EnforcedPause.selector);
         roulette.placeBet(RouletteTypes.BetType.STRAIGHT_UP, numbers, MIN_BET);
         vm.stopPrank();
     }
@@ -1400,7 +1437,7 @@ contract RouletteTest is Test {
 
     function testVault_SetRouletteRevertIfNotOwner() public {
         vm.prank(player1);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         vault.setRoulette(address(0x999));
     }
 
@@ -1421,7 +1458,7 @@ contract RouletteTest is Test {
 
     function testVault_SetMaxCapacityRevertIfNotOwner() public {
         vm.prank(player1);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         vault.setMaxCapacity(20_000_000e6);
     }
 
@@ -1528,13 +1565,15 @@ contract RouletteTest is Test {
         usdc.approve(address(vault), 100_000e6);
         vault.deposit(100_000e6, lp1);
         vm.stopPrank();
-        
-        // Simulate loss larger than profit (profit should become 0, not negative)
+
+        // Simulate loss when there's no profit - loss should be tracked separately
         vm.prank(address(roulette));
         vault.recordLoss(1000e6);
-        
-        (,,,,uint256 totalProfit) = vault.getVaultStats();
-        assertEq(totalProfit, 0);
+
+        (uint256 vaultTotalAssets,,,,uint256 totalProfit, uint256 totalLoss) = vault.getVaultStats();
+        assertEq(totalProfit, 0, "Profit should remain 0");
+        assertEq(totalLoss, 1000e6, "Loss should be tracked");
+        assertEq(vaultTotalAssets, 100_000e6 - 1000e6, "Total assets should reflect loss");
     }
 
     function testVault_PayoutRevertIfInsufficientBalance() public {
@@ -1557,8 +1596,8 @@ contract RouletteTest is Test {
         
         vm.startPrank(player1);
         usdc.approve(address(newVault), 100e6);
-        
-        vm.expectRevert(RouletteVault.UnauthorizedCaller.selector);
+
+        vm.expectRevert(RouletteVault.RouletteNotSet.selector);
         newVault.depositCredits(100e6);
         vm.stopPrank();
     }
@@ -1571,9 +1610,9 @@ contract RouletteTest is Test {
             "TEST",
             MAX_VAULT_CAPACITY
         );
-        
+
         vm.prank(player1);
-        vm.expectRevert(RouletteVault.UnauthorizedCaller.selector);
+        vm.expectRevert(RouletteVault.RouletteNotSet.selector);
         newVault.withdrawCredits(100e6);
     }
 
@@ -1583,24 +1622,34 @@ contract RouletteTest is Test {
         usdc.approve(address(vault), 100_000e6);
         uint256 shares = vault.deposit(100_000e6, lp1);
         vm.stopPrank();
-        
-        // Players bet and lose (profit for vault)
+
+        // Players bet (may win or lose)
         vm.startPrank(player1);
         usdc.approve(address(vault), 10_000e6);
         vault.depositCredits(10_000e6);
-        
+
         uint8[] memory numbers = new uint8[](1);
         numbers[0] = 7;
-        roulette.placeBet(RouletteTypes.BetType.STRAIGHT_UP, numbers, MIN_BET); // Use MIN_BET
+        roulette.placeBet(RouletteTypes.BetType.STRAIGHT_UP, numbers, MIN_BET);
         vm.stopPrank();
-        
-        // Spin and lose (most numbers will lose)
+
+        // Spin
         spinAndFulfill();
-        
-        // LP shares should now be worth >= initial deposit
+
+        // Get round result to determine expected outcome
+        RouletteTypes.Round memory round = roulette.getRound(1);
         uint256 assetsAfter = vault.previewRedeem(shares);
-        // Assets should be >= initial deposit (may be equal if the bet won)
-        assertGe(assetsAfter, 100_000e6);
+
+        if (round.winningNumber == 7) {
+            // Player won - vault takes a loss of 35 * MIN_BET
+            uint256 expectedLoss = MIN_BET * 35; // 35:1 payout means net loss of 35x bet
+            // Use approximate equality (within 1 wei) due to ERC4626 rounding
+            assertApproxEqAbs(assetsAfter, 100_000e6 - expectedLoss, 1, "LP assets should decrease when player wins");
+        } else {
+            // Player lost - vault profits from the bet
+            // Use approximate equality (within 1 wei) due to ERC4626 rounding
+            assertApproxEqAbs(assetsAfter, 100_000e6 + MIN_BET, 1, "LP assets should increase when player loses");
+        }
     }
 
     function testVault_MultipleWithdrawals() public {
@@ -1697,7 +1746,7 @@ contract RouletteTest is Test {
         spinAndFulfill();
         
         // Check if profit occurred
-        (,,,,uint256 profit) = vault.getVaultStats();
+        (,,,,,uint256 profit) = vault.getVaultStats();
         
         if (profit > 0) {
             // Shares should be worth more now
