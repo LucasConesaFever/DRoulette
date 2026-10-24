@@ -52,7 +52,7 @@ library RouletteTypes {
         address player;
         BetType betType;
         uint40 numbersMask; // bit n set = bet covers number n
-        uint48 amount; // max ~281M USDC (6 decimals)
+        uint48 amount; // D6{USDC} stake; max ~281M USDC (6 decimals)
     }
 
     /// @notice A game round. Bets of a round have contiguous ids [firstBetId, lastBetId]
@@ -60,44 +60,45 @@ library RouletteTypes {
         uint256 requestId; // Chainlink VRF request ID
         uint64 firstBetId;
         uint64 lastBetId;
-        uint64 timestamp; // time of the first bet
-        uint8 winningNumber; // 255 until settled
+        uint64 timestamp; // {s} time of the first bet
+        uint8 winningNumber; // {pocket} 255 until settled
         Color winningColor;
         bool completed;
         bool refunded;
-        uint128 totalBets; // sum of stakes
-        uint128 totalPayout; // sum of payouts (stake + winnings) to winners
-        uint256 maxExposure; // sum of amount * (multiplier + 1), worst case if every bet wins
+        uint128 totalBets; // D6{USDC} sum of stakes (NOT a count)
+        uint128 totalPayout; // D6{USDC} gross: sum of payouts (stake + winnings) to winners
+        // D6{USDC} = Σ D6{USDC} * D0{1}
+        uint256 maxExposure; // D6{USDC} gross: sum of amount * (multiplier + 1), worst case if every bet wins
     }
 
     /// @notice Per-player statistics, laid out so losing bets need no write at settlement
     struct PlayerStats {
         // slot 0: written by placeBet
-        uint32 totalBets;
-        uint40 lastPlayedTimestamp;
-        uint64 lastRoundId; // round of the player's last bet
-        uint120 lastRoundWagered; // stakes placed in lastRoundId
+        uint32 totalBets; // {count} number of bets (NOT a USDC sum)
+        uint40 lastPlayedTimestamp; // {s}
+        uint64 lastRoundId; // {id} round of the player's last bet
+        uint120 lastRoundWagered; // D6{USDC} stakes placed in lastRoundId
         // slot 1: written by placeBet
-        uint256 totalWagered;
+        uint256 totalWagered; // D6{USDC}
         // slot 2: written at settlement, winners only
-        uint128 totalWon; // winnings, without the returned stake
-        uint128 totalWonStakes; // stakes of winning bets
+        uint128 totalWon; // D6{USDC} net: winnings, without the returned stake
+        uint128 totalWonStakes; // D6{USDC} stakes of winning bets
     }
 
     /// @notice Player statistics as returned to callers
     struct PlayerStatsView {
-        uint256 totalBets;
-        uint256 totalWagered;
-        uint256 totalWon;
-        uint256 totalLost;
-        uint256 lastPlayedTimestamp;
+        uint256 totalBets; // {count}
+        uint256 totalWagered; // D6{USDC}
+        uint256 totalWon; // D6{USDC} net winnings (stake excluded)
+        uint256 totalLost; // D6{USDC}
+        uint256 lastPlayedTimestamp; // {s}
     }
 
     /*//////////////////////////////////////////////////////////////
                                CONSTANTS
     //////////////////////////////////////////////////////////////*/
-    uint8 internal constant MAX_NUMBER = 36;
-    uint256 internal constant WHEEL_SIZE = 37;
+    uint8 internal constant MAX_NUMBER = 36; // {pocket}
+    uint256 internal constant WHEEL_SIZE = 37; // {count} pockets on the wheel
 
     uint40 internal constant RED_MASK = 0x154aad52aa;
     uint40 internal constant BLACK_MASK = 0xab552ad54;
@@ -116,6 +117,7 @@ library RouletteTypes {
                            INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
     /// @notice Payout multipliers for each bet type (multiplied by bet amount)
+    /// @return D0{1} winnings per unit stake (stake excluded); gross payout uses (mult + 1)
     function getPayoutMultiplier(BetType betType) internal pure returns (uint256) {
         if (betType == BetType.STRAIGHT_UP) return 35;
         if (betType == BetType.SPLIT) return 17;

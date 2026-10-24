@@ -1,0 +1,82 @@
+{
+  "project_root": "/home/cemerian/projects/DRoulette",
+  "in_scope_files": [
+    {
+      "path": "/home/cemerian/projects/DRoulette/src/Roulette.sol",
+      "priority": "CRITICAL",
+      "score": 143,
+      "category": "core-logic",
+      "patterns_found": {
+        "high_signal": ["10_000 (BPS)"],
+        "medium_signal": ["maxExposureBps", "houseEdge (bps)", "getPayoutMultiplier", "payout = amount * (mult + 1)", "int256 netToPlayers", "MIN_VRF_TIMEOUT = 1 hours", "vrfTimeout", "spinDelay", "block.timestamp casts", "uint128/uint120 narrowing", "% WHEEL_SIZE"]
+      },
+      "phase2": "ANNOTATED",
+      "phase3": "PROPAGATED",
+      "phase4": "VALIDATED"
+    },
+    {
+      "path": "/home/cemerian/projects/DRoulette/src/RouletteVault.sol",
+      "priority": "CRITICAL",
+      "score": 29,
+      "category": "conversion",
+      "patterns_found": {
+        "high_signal": [],
+        "medium_signal": ["_convertToShares", "Math.Rounding.Floor", "DECIMALS_OFFSET = 6 (shares 12-dec vs assets 6-dec)", "maxCapacity - totalAssets", "totalAssets - reservedLiquidity"]
+      },
+      "phase2": "ANNOTATED",
+      "phase3": "REVIEWED_NO_PROPAGATION_CHANGES",
+      "phase4": "VALIDATED"
+    },
+    {
+      "path": "/home/cemerian/projects/DRoulette/src/libraries/RouletteTypes.sol",
+      "priority": "HIGH",
+      "score": 16,
+      "category": "math-library",
+      "patterns_found": {
+        "high_signal": [],
+        "medium_signal": ["getPayoutMultiplier (35..1, dimensionless odds)", "uint48 amount (USDC 6-dec)", "uint128 totalBets/totalPayout", "maxExposure = sum amount*(mult+1)", "WHEEL_SIZE = 37"]
+      },
+      "phase2": "ANNOTATED",
+      "phase3": "REVIEWED_NO_PROPAGATION_CHANGES",
+      "phase4": "VALIDATED"
+    },
+    {
+      "path": "/home/cemerian/projects/DRoulette/src/interfaces/IRouletteLiquidity.sol",
+      "priority": "LOW",
+      "score": 3,
+      "category": "peripheral",
+      "patterns_found": {
+        "high_signal": [],
+        "medium_signal": ["reservedLiquidity (net worst-case payout, USDC)"]
+      },
+      "phase2": "ANNOTATED",
+      "phase3": "REVIEWED_NO_PROPAGATION_CHANGES",
+      "phase4": "VALIDATED"
+    }
+  ],
+  "discoverer_focus_files": [
+    "/home/cemerian/projects/DRoulette/src/libraries/RouletteTypes.sol",
+    "/home/cemerian/projects/DRoulette/src/RouletteVault.sol",
+    "/home/cemerian/projects/DRoulette/src/Roulette.sol"
+  ],
+  "recommended_discovery_order": [
+    {
+      "phase": 1,
+      "rationale": "Library defines the units: USDC 6-dec amounts (uint48), dimensionless payout multipliers, the maxExposure meaning, and the storage widths of the Round/PlayerStats fields",
+      "files": ["/home/cemerian/projects/DRoulette/src/libraries/RouletteTypes.sol"]
+    },
+    {
+      "phase": 2,
+      "rationale": "Vault defines the asset-to-share conversion (DECIMALS_OFFSET 6, Floor rounding) and the capacity and free-asset limits; the interface defines reservedLiquidity",
+      "files": [
+        "/home/cemerian/projects/DRoulette/src/RouletteVault.sol",
+        "/home/cemerian/projects/DRoulette/src/interfaces/IRouletteLiquidity.sol"
+      ]
+    },
+    {
+      "phase": 3,
+      "rationale": "Core logic combines both: bps exposure check against vault assets, payouts, signed house PnL and deficit, timeouts and narrowing casts",
+      "files": ["/home/cemerian/projects/DRoulette/src/Roulette.sol"]
+    }
+  ]
+}

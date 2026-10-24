@@ -31,52 +31,52 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
                             STATE VARIABLES
     //////////////////////////////////////////////////////////////*/
     // Chainlink VRF V2.5
-    uint16 private constant REQUEST_CONFIRMATIONS = 3;
-    uint32 private constant NUM_WORDS = 1;
+    uint16 private constant REQUEST_CONFIRMATIONS = 3; // {block}
+    uint32 private constant NUM_WORDS = 1; // {count}
     /// @dev Fixed coordinator. The inherited, owner-callable setCoordinator only changes s_vrfCoordinator,
     ///      which this contract never uses, so the owner can't swap in a coordinator that picks numbers.
     IVRFCoordinatorV2Plus private immutable i_vrfCoordinator;
     uint256 private immutable i_subscriptionId;
     bytes32 private immutable i_gasLane;
-    uint32 private immutable i_callbackGasLimit;
+    uint32 private immutable i_callbackGasLimit; // {gas}
     bool private immutable i_nativePayment; // true = pay with ETH, false = pay with LINK
 
     /// @notice Max bets per round, so a round with every bet winning settles within the callback gas limit
     /// @dev Sized by test/gas/CallbackGas.t.sol with cold storage: worst case ~51k gas per winning
     ///      bet + ~149k fixed, 40 bets ~2.19M of the 2.5M callback gas limit (~12% headroom)
-    uint256 public constant MAX_BETS_PER_ROUND = 40;
-    uint256 private constant BPS = 10_000;
+    uint256 public constant MAX_BETS_PER_ROUND = 40; // {count}
+    uint256 private constant BPS = 10_000; // BPS{1} = 100%
     /// @notice Lower bound for vrfTimeout, so the owner can't refund a round right after seeing its result
-    uint256 public constant MIN_VRF_TIMEOUT = 1 hours;
+    uint256 public constant MIN_VRF_TIMEOUT = 1 hours; // {s}
 
     RouletteVault public immutable vault;
     IERC20 public immutable usdc;
 
     // Roulette state
     RouletteTypes.RouletteState public state;
-    uint256 public minBet;
-    uint256 public maxBet;
-    uint256 public houseEdge;
-    uint256 public currentRoundId;
-    uint256 public betIdCounter;
-    uint256 public spinDelay;
-    uint256 public lastSpinTimestamp;
-    uint256 public spinRequestedAt;
+    uint256 public minBet; // D6{USDC}
+    uint256 public maxBet; // D6{USDC}
+    uint256 public houseEdge; // BPS{1} informational, unused in payout math
+    uint256 public currentRoundId; // {id}
+    uint256 public betIdCounter; // {id}
+    uint256 public spinDelay; // {s} duration
+    uint256 public lastSpinTimestamp; // {s} timestamp
+    uint256 public spinRequestedAt; // {s} timestamp
     /// @notice Max net worst-case payout of a round, in bps of vault assets
-    uint256 public maxExposureBps;
+    uint256 public maxExposureBps; // BPS{1} [0, BPS]
     /// @notice Time after a spin request before the owner can refund the round
-    uint256 public vrfTimeout;
+    uint256 public vrfTimeout; // {s} duration, >= MIN_VRF_TIMEOUT
     /// @notice USDC owed by the vault after a round it could not fully cover
-    uint256 public deficit;
+    uint256 public deficit; // D6{USDC}
 
     // Player credits (1:1 with USDC held by this contract)
-    mapping(address => uint256) public credits;
-    uint256 public totalCredits;
+    mapping(address => uint256) public credits; // D6{credit} (= D6{USDC})
+    uint256 public totalCredits; // D6{credit} (= D6{USDC})
 
     // House statistics
-    uint256 public totalWagered;
-    uint256 public totalPaidOut;
-    int256 public houseNetPnl;
+    uint256 public totalWagered; // D6{USDC} sum of settled stakes
+    uint256 public totalPaidOut; // D6{USDC} gross: stake + winnings
+    int256 public houseNetPnl; // signed D6{USDC} = -Σ netToPlayers
 
     mapping(uint256 requestId => uint256 roundId) private s_requestIdToRoundId;
     mapping(uint256 => RouletteTypes.Round) private s_rounds;
@@ -87,30 +87,32 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
     event StateChanged(RouletteTypes.RouletteState indexed newState);
-    event CreditsDeposited(address indexed player, uint256 amount);
-    event CreditsWithdrawn(address indexed player, uint256 amount);
+    event CreditsDeposited(address indexed player, uint256 amount); // amount: D6{USDC} -> D6{credit} 1:1
+    event CreditsWithdrawn(address indexed player, uint256 amount); // amount: D6{credit} -> D6{USDC} 1:1
     event BetPlaced(
         uint256 indexed roundId,
         uint256 indexed betId,
         address indexed player,
         RouletteTypes.BetType betType,
-        uint256 amount
+        uint256 amount // D6{USDC} stake
     );
-    event SpinRequested(uint256 indexed roundId, uint256 timestamp);
-    event BetWon(uint256 indexed betId, address indexed player, uint256 payout);
+    event SpinRequested(uint256 indexed roundId, uint256 timestamp); // timestamp: {s}
+    event BetWon(uint256 indexed betId, address indexed player, uint256 payout); // payout: D6{USDC} gross
+    // winningNumber: {pocket}; totalPayout: D6{USDC} gross
     event SpinCompleted(
         uint256 indexed roundId, uint8 winningNumber, RouletteTypes.Color winningColor, uint256 totalPayout
     );
+    // totalBets: D6{USDC} stakes; totalPayout: D6{USDC} gross; netToPlayers: signed D6{USDC}
     event RoundSettled(uint256 indexed roundId, uint256 totalBets, uint256 totalPayout, int256 netToPlayers);
-    event DeficitRecorded(uint256 indexed roundId, uint256 deficit);
-    event DeficitCovered(uint256 amount, uint256 remaining);
+    event DeficitRecorded(uint256 indexed roundId, uint256 deficit); // deficit: D6{USDC}
+    event DeficitCovered(uint256 amount, uint256 remaining); // D6{USDC}, D6{USDC}
     event RoundRefunded(uint256 indexed roundId);
-    event MinBetUpdated(uint256 oldMinBet, uint256 newMinBet);
-    event MaxBetUpdated(uint256 oldMaxBet, uint256 newMaxBet);
-    event HouseEdgeUpdated(uint256 oldHouseEdge, uint256 newHouseEdge);
-    event SpinDelayUpdated(uint256 oldDelay, uint256 newDelay);
-    event MaxExposureBpsUpdated(uint256 oldBps, uint256 newBps);
-    event VrfTimeoutUpdated(uint256 oldTimeout, uint256 newTimeout);
+    event MinBetUpdated(uint256 oldMinBet, uint256 newMinBet); // D6{USDC}
+    event MaxBetUpdated(uint256 oldMaxBet, uint256 newMaxBet); // D6{USDC}
+    event HouseEdgeUpdated(uint256 oldHouseEdge, uint256 newHouseEdge); // BPS{1}
+    event SpinDelayUpdated(uint256 oldDelay, uint256 newDelay); // {s}
+    event MaxExposureBpsUpdated(uint256 oldBps, uint256 newBps); // BPS{1}
+    event VrfTimeoutUpdated(uint256 oldTimeout, uint256 newTimeout); // {s}
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -147,12 +149,12 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
      * @param _callbackGasLimit Gas limit for the callback
      * @param _nativePayment Whether to pay for VRF with native ETH (true) or LINK (false)
      * @param _vault Address of the RouletteVault
-     * @param _minBet Minimum bet amount
-     * @param _maxBet Maximum bet amount
-     * @param _houseEdge House edge in basis points (270 = 2.7%)
-     * @param _spinDelay Minimum delay between spins in seconds
-     * @param _maxExposureBps Max net worst-case payout of a round, in bps of vault assets
-     * @param _vrfTimeout Time after a spin request before the owner can refund the round
+     * @param _minBet D6{USDC} Minimum bet amount
+     * @param _maxBet D6{USDC} Maximum bet amount
+     * @param _houseEdge BPS{1} House edge in basis points (270 = 2.7%)
+     * @param _spinDelay {s} Minimum delay between spins in seconds
+     * @param _maxExposureBps BPS{1} Max net worst-case payout of a round, in bps of vault assets
+     * @param _vrfTimeout {s} Time after a spin request before the owner can refund the round
      */
     constructor(
         address _vrfCoordinator,
@@ -192,11 +194,12 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     //////////////////////////////////////////////////////////////*/
     /**
      * @notice Deposit USDC to receive credits for betting (1:1)
-     * @param amount Amount of USDC to deposit
+     * @param amount D6{USDC} Amount of USDC to deposit (credited 1:1 as D6{credit})
      */
     function depositCredits(uint256 amount) external nonReentrant {
         if (amount == 0) revert Roulette__InvalidAmount();
 
+        // D6{credit} += D6{USDC} (1:1)
         credits[msg.sender] += amount;
         totalCredits += amount;
         emit CreditsDeposited(msg.sender, amount);
@@ -208,7 +211,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
      * @notice Withdraw credits back to USDC
      * @dev Allowed in every state. During a deficit, withdrawals are first come, first served:
      *      once this contract's balance runs out, they revert until the deficit is covered.
-     * @param amount Amount of credits to withdraw
+     * @param amount D6{credit} Amount of credits to withdraw (paid 1:1 as D6{USDC})
      */
     function withdrawCredits(uint256 amount) external nonReentrant {
         if (amount == 0) revert Roulette__InvalidAmount();
@@ -217,6 +220,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
             revert Roulette__InsufficientRouletteBalance();
         }
 
+        // D6{credit} -= D6{credit}; paid out 1:1 as D6{USDC}
         credits[msg.sender] -= amount;
         totalCredits -= amount;
         emit CreditsWithdrawn(msg.sender, amount);
@@ -228,7 +232,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
      * @notice Place a bet using credits
      * @param betType Type of bet
      * @param numbers Numbers to bet on (depends on bet type)
-     * @param amount Amount to bet
+     * @param amount D6{credit} Amount to bet (stake, D6{USDC})
      */
     function placeBet(RouletteTypes.BetType betType, uint8[] calldata numbers, uint256 amount)
         external
@@ -240,7 +244,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         uint40 numbersMask = RouletteTypes.toNumbersMask(betType, nums);
         if (state != RouletteTypes.RouletteState.OPEN) revert Roulette__RouletteNotOpen();
         if (amount < minBet || amount > maxBet) revert Roulette__InvalidBetAmount();
-        uint256 playerCredits = credits[msg.sender];
+        uint256 playerCredits = credits[msg.sender]; // D6{credit}
         if (playerCredits < amount) revert Roulette__InsufficientCredits();
 
         uint256 roundId = currentRoundId;
@@ -248,6 +252,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         _addBetToRound(roundId, betId, betType, amount);
 
         // Debit credits; the USDC stays here as the round's stake
+        // D6{credit} = D6{credit} - D6{credit}
         credits[msg.sender] = playerCredits - amount;
         totalCredits -= amount;
 
@@ -266,8 +271,9 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     function spin() external nonReentrant onlyOwner whenNotPaused {
         if (state != RouletteTypes.RouletteState.OPEN) revert Roulette__AlreadyCalculating();
 
-        uint256 lastSpin = lastSpinTimestamp;
+        uint256 lastSpin = lastSpinTimestamp; // {s}
         if (lastSpin > 0) {
+            // {s} = {s} - {s}
             uint256 timeSinceLastSpin = block.timestamp - lastSpin;
             if (timeSinceLastSpin < spinDelay) revert Roulette__SpinDelayNotMet(spinDelay - timeSinceLastSpin);
         }
@@ -302,11 +308,13 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     function coverDeficit() external nonReentrant {
         if (state != RouletteTypes.RouletteState.DEFICIT) revert Roulette__NoDeficit();
 
-        uint256 owed = deficit;
-        uint256 amount = usdc.balanceOf(address(vault));
+        uint256 owed = deficit; // D6{USDC}
+        uint256 amount = usdc.balanceOf(address(vault)); // D6{USDC}
         if (amount == 0) revert Roulette__NothingToCover();
+        // D6{USDC} = min(D6{USDC} vault balance, D6{USDC} owed)
         if (amount > owed) amount = owed;
 
+        // D6{USDC} = D6{USDC} - D6{USDC}
         owed -= amount;
         deficit = owed;
         if (owed == 0) _setState(RouletteTypes.RouletteState.OPEN);
@@ -322,6 +330,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
      */
     function refundRound() external nonReentrant onlyOwner {
         if (state != RouletteTypes.RouletteState.CALCULATING) revert Roulette__NotCalculating();
+        // {s} = {s} - {s}
         uint256 elapsed = block.timestamp - spinRequestedAt;
         if (elapsed < vrfTimeout) revert Roulette__VrfTimeoutNotReached(vrfTimeout - elapsed);
 
@@ -331,13 +340,14 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         uint256 lastBetId = round.lastBetId;
         for (uint256 betId = round.firstBetId; betId != 0 && betId <= lastBetId; ++betId) {
             RouletteTypes.Bet memory bet = s_bets[betId];
-            credits[bet.player] += bet.amount;
+            credits[bet.player] += bet.amount; // D6{credit} += D6{USDC} stake (1:1)
 
             RouletteTypes.PlayerStats storage stats = s_playerStats[bet.player];
-            stats.totalBets -= 1;
-            stats.totalWagered -= bet.amount;
-            stats.lastRoundWagered -= bet.amount;
+            stats.totalBets -= 1; // {count}
+            stats.totalWagered -= bet.amount; // D6{USDC}
+            stats.lastRoundWagered -= bet.amount; // D6{USDC}
         }
+        // D6{credit} += D6{USDC} (sum of stakes, refunded 1:1)
         totalCredits += round.totalBets;
 
         delete s_requestIdToRoundId[round.requestId];
@@ -429,6 +439,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     /// @inheritdoc IRouletteLiquidity
     function reservedLiquidity() external view returns (uint256 reserved) {
         RouletteTypes.Round storage round = s_rounds[currentRoundId];
+        // D6{USDC} net worst case = D6{USDC} gross maxExposure - D6{USDC} stakes
         reserved = round.maxExposure - round.totalBets;
     }
 
@@ -452,7 +463,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
      * @notice Get a bet's result, derived from its round's winning number
      * @return settled True once the round completed (and was not refunded)
      * @return won Whether the bet won
-     * @return payout Stake + winnings if the bet won
+     * @return payout D6{USDC} gross: Stake + winnings if the bet won
      */
     function getBetResult(uint256 betId, uint256 roundId)
         external
@@ -466,22 +477,27 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
 
         RouletteTypes.Bet memory bet = s_bets[betId];
         won = RouletteTypes.checkWin(bet.numbersMask, round.winningNumber);
-        if (won) payout = uint256(bet.amount) * (RouletteTypes.getPayoutMultiplier(bet.betType) + 1);
+        // D6{USDC} = D6{USDC} * D0{1}(mult + 1)
+        if (won) payout =uint256(bet.amount) * (RouletteTypes.getPayoutMultiplier(bet.betType) + 1);
     }
 
     /// @notice Get player statistics. totalLost excludes stakes of the round in progress.
     function getPlayerStats(address player) external view returns (RouletteTypes.PlayerStatsView memory view_) {
         RouletteTypes.PlayerStats storage stats = s_playerStats[player];
-        uint256 pending = s_rounds[stats.lastRoundId].completed ? 0 : stats.lastRoundWagered;
+        uint256 pending = s_rounds[stats.lastRoundId].completed ? 0 : stats.lastRoundWagered; // D6{USDC}
 
-        view_.totalBets = stats.totalBets;
-        view_.totalWagered = stats.totalWagered;
-        view_.totalWon = stats.totalWon;
+        view_.totalBets = stats.totalBets; // {count} (PlayerStats.totalBets, not Round.totalBets)
+        view_.totalWagered = stats.totalWagered; // D6{USDC}
+        view_.totalWon = stats.totalWon; // D6{USDC} net
+        // D6{USDC} = D6{USDC} - D6{USDC} - D6{USDC}
         view_.totalLost = stats.totalWagered - stats.totalWonStakes - pending;
-        view_.lastPlayedTimestamp = stats.lastPlayedTimestamp;
+        view_.lastPlayedTimestamp = stats.lastPlayedTimestamp; // {s}
     }
 
     /// @notice Get house statistics
+    /// @return wagered D6{USDC} settled stakes
+    /// @return paidOut D6{USDC} gross payouts
+    /// @return netPnl signed D6{USDC} house net PnL
     function getHouseStats() external view returns (uint256 wagered, uint256 paidOut, int256 netPnl) {
         return (totalWagered, totalPaidOut, houseNetPnl);
     }
@@ -540,21 +556,24 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
 
         if (round.firstBetId == 0) {
             round.firstBetId = betId.toUint64();
-            round.timestamp = uint64(block.timestamp);
+            round.timestamp = uint64(block.timestamp); // {s}
             round.winningNumber = type(uint8).max;
-        } else if (betId - round.firstBetId >= MAX_BETS_PER_ROUND) {
+        } else if (betId - round.firstBetId >= MAX_BETS_PER_ROUND) { // {count} = {id} - {id}, vs {count}
             revert Roulette__RoundFull();
         }
         // forge-lint: disable-next-line(unsafe-typecast) bet ids can't reach 2^64
         round.lastBetId = uint64(betId);
 
+        // D6{USDC} = D6{USDC} + D6{USDC}
         uint256 roundTotalBets = round.totalBets + amount;
+        // D6{USDC} gross = D6{USDC} + D6{USDC} * D0{1}(mult + 1)
         uint256 roundMaxExposure = round.maxExposure + amount * (RouletteTypes.getPayoutMultiplier(betType) + 1);
+        // D6{USDC} net * BPS > D6{USDC} * BPS{1}  <=>  net / totalAssets > maxExposureBps / BPS
         if ((roundMaxExposure - roundTotalBets) * BPS > vault.totalAssets() * maxExposureBps) {
             revert Roulette__ExposureLimitExceeded();
         }
-        round.totalBets = roundTotalBets.toUint128();
-        round.maxExposure = roundMaxExposure;
+        round.totalBets = roundTotalBets.toUint128(); // D6{USDC} stakes (Round.totalBets, not a count)
+        round.maxExposure = roundMaxExposure; // D6{USDC} gross
     }
 
     /// @dev Updates the bettor's stats at bet time (two slots; settlement only touches winners)
@@ -563,13 +582,13 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         if (stats.lastRoundId != roundId) {
             // forge-lint: disable-next-line(unsafe-typecast) round ids can't reach 2^64
             stats.lastRoundId = uint64(roundId);
-            stats.lastRoundWagered = 0;
+            stats.lastRoundWagered = 0; // D6{USDC}
         }
         // forge-lint: disable-next-line(unsafe-typecast) amount fits in uint48 (checked when storing the bet)
-        stats.lastRoundWagered += uint120(amount);
-        stats.totalBets += 1;
-        stats.lastPlayedTimestamp = uint40(block.timestamp);
-        stats.totalWagered += amount;
+        stats.lastRoundWagered += uint120(amount); // D6{USDC}
+        stats.totalBets += 1; // {count}
+        stats.lastPlayedTimestamp = uint40(block.timestamp); // {s}
+        stats.totalWagered += amount; // D6{USDC}
     }
 
     /**
@@ -585,44 +604,48 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         delete s_requestIdToRoundId[requestId];
 
         RouletteTypes.Round storage round = s_rounds[roundId];
-        uint8 winningNumber = uint8(randomWords[0] % RouletteTypes.WHEEL_SIZE);
+        uint8 winningNumber = uint8(randomWords[0] % RouletteTypes.WHEEL_SIZE); // {pocket} 0..36
         RouletteTypes.Color winningColor = RouletteTypes.getNumberColor(winningNumber);
 
-        uint256 totalPayout;
+        uint256 totalPayout; // D6{USDC} gross
         uint256 lastBetId = round.lastBetId;
         for (uint256 betId = round.firstBetId; betId <= lastBetId; ++betId) {
             RouletteTypes.Bet memory bet = s_bets[betId];
             if (!RouletteTypes.checkWin(bet.numbersMask, winningNumber)) continue;
 
+            // D6{USDC} net = D6{USDC} * D0{1}
             uint256 winnings = uint256(bet.amount) * RouletteTypes.getPayoutMultiplier(bet.betType);
+            // D6{USDC} gross = D6{USDC} stake + D6{USDC} net
             uint256 payout = bet.amount + winnings;
-            totalPayout += payout;
-            credits[bet.player] += payout;
+            totalPayout += payout; // D6{USDC} gross
+            credits[bet.player] += payout; // D6{credit} += D6{USDC} gross (1:1)
 
             RouletteTypes.PlayerStats storage stats = s_playerStats[bet.player];
             // forge-lint: disable-next-line(unsafe-typecast) winnings <= uint48 amount * 35
-            stats.totalWon += uint128(winnings);
-            stats.totalWonStakes += bet.amount;
+            stats.totalWon += uint128(winnings); // D6{USDC} net
+            stats.totalWonStakes += bet.amount; // D6{USDC} stake
 
             emit BetWon(betId, bet.player, payout);
         }
 
-        uint256 roundTotalBets = round.totalBets;
+        uint256 roundTotalBets = round.totalBets; // D6{USDC} stakes
+        // signed D6{USDC} = D6{USDC} gross payout - D6{USDC} stakes
         // forge-lint: disable-next-line(unsafe-typecast) both are bounded by uint128 round totals
         int256 netToPlayers = int256(totalPayout) - int256(roundTotalBets);
 
+        // D6{credit} += D6{USDC} gross (1:1)
         totalCredits += totalPayout;
-        totalWagered += roundTotalBets;
-        totalPaidOut += totalPayout;
-        houseNetPnl -= netToPlayers;
+        totalWagered += roundTotalBets; // D6{USDC} stakes
+        totalPaidOut += totalPayout; // D6{USDC} gross
+        houseNetPnl -= netToPlayers; // signed D6{USDC}
 
         round.winningNumber = winningNumber;
         round.winningColor = winningColor;
         round.completed = true;
         // forge-lint: disable-next-line(unsafe-typecast) payout <= round maxExposure, bounded by MAX_BETS_PER_ROUND uint48 bets
-        round.totalPayout = uint128(totalPayout);
+        round.totalPayout = uint128(totalPayout); // D6{USDC} gross
 
-        lastSpinTimestamp = block.timestamp;
+        lastSpinTimestamp = block.timestamp; // {s}
         currentRoundId = roundId + 1;
 
         emit SpinCompleted(roundId, winningNumber, winningColor, totalPayout);
@@ -634,12 +657,13 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     /**
      * @dev Moves the round's net amount between Roulette and the vault. If the vault can't cover
      *      the players' net winnings, pulls what it has and records the rest as a deficit.
+     * @param netToPlayers signed D6{USDC} (gross payout - stakes); < 0 means house won
      */
     function _settleWithVault(uint256 roundId, int256 netToPlayers) internal {
         if (netToPlayers < 0) {
             _setState(RouletteTypes.RouletteState.OPEN);
             // forge-lint: disable-next-line(unsafe-typecast) netToPlayers < 0
-            usdc.safeTransfer(address(vault), uint256(-netToPlayers));
+            usdc.safeTransfer(address(vault), uint256(-netToPlayers)); // D6{USDC} house net winnings
             return;
         }
         if (netToPlayers == 0) {
@@ -648,18 +672,19 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         }
 
         // forge-lint: disable-next-line(unsafe-typecast) netToPlayers > 0
-        uint256 owed = uint256(netToPlayers);
-        uint256 available = usdc.balanceOf(address(vault));
+        uint256 owed = uint256(netToPlayers); // D6{USDC}
+        uint256 available = usdc.balanceOf(address(vault)); // D6{USDC}
         if (available >= owed) {
             _setState(RouletteTypes.RouletteState.OPEN);
-            vault.fundPayout(owed);
+            vault.fundPayout(owed); // D6{USDC} net player winnings
             return;
         }
 
+        // D6{USDC} = D6{USDC} - D6{USDC}
         deficit = owed - available;
         _setState(RouletteTypes.RouletteState.DEFICIT);
         emit DeficitRecorded(roundId, owed - available);
-        if (available > 0) vault.fundPayout(available);
+        if (available > 0) vault.fundPayout(available); // D6{USDC} partial cover
     }
 
     function _setState(RouletteTypes.RouletteState newState) internal {

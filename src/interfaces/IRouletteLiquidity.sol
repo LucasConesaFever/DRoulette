@@ -10,5 +10,6 @@ interface IRouletteLiquidity {
     function lpLocked() external view returns (bool);
 
     /// @notice Net worst-case payout of the open round, which LP withdrawals must leave in the vault
+    /// @return D6{USDC} net worst case (gross maxExposure minus stakes already held)
     function reservedLiquidity() external view returns (uint256);
 }
