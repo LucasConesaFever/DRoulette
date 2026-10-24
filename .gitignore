@@ -12,3 +12,8 @@ docs/
 
 # Dotenv file
 .env
+
+# Echidna / Medusa output
+crytic/
+crytic-export/
+.medusa-artifact-hash

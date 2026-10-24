@@ -1,0 +1,8 @@
+# echidna . --contract CryticTester --config echidna.yaml
+testMode: property
+prefix: "property_"
+testLimit: 1000000
+seqLen: 100
+shrinkLimit: 5000
+corpusDir: "crytic/echidna-corpus"
+cryticArgs: ["--foundry-compile-all"]

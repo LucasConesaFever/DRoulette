@@ -33,6 +33,8 @@ contract Handler is Test {
     uint256 public ghostCreditsWithdrawn;
     uint256 public ghostStakesPlaced;
     uint256 public ghostStakesRefunded;
+    // Late VRF answers that changed a refunded round (must stay 0). A counter, not an assert, so Echidna and Medusa can check it too
+    uint256 public ghostLateFulfillViolations;
 
     constructor(
         Roulette _roulette,
@@ -140,8 +142,10 @@ contract Handler is Test {
         // The mock swallows the callback revert; the refunded round must stay unsettled
         vrfCoordinator.fulfillRandomWordsWithOverride(ghostPendingRequestId, address(roulette), words);
         ghostPendingRequestId = 0;
-        assertEq(roulette.totalCredits(), creditsBefore, "late VRF answer changed credits");
-        assertTrue(roulette.getRound(roundId).refunded);
+        RouletteTypes.Round memory round = roulette.getRound(roundId);
+        if (roulette.totalCredits() != creditsBefore || !round.refunded || round.winningNumber != 255) {
+            ++ghostLateFulfillViolations;
+        }
     }
 
     /*//////////////////////////////////////////////////////////////

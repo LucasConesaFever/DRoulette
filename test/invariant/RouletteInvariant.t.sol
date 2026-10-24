@@ -71,4 +71,9 @@ contract RouletteInvariantTest is StdInvariant, BaseTest {
         uint256 openStakes = round.completed ? 0 : round.totalBets;
         assertEq(wagered, handler.ghostStakesPlaced() - handler.ghostStakesRefunded() - openStakes);
     }
+
+    /// @notice A VRF answer arriving after a refund never settles or changes the round
+    function invariant_LateFulfillIsIgnored() public view {
+        assertEq(handler.ghostLateFulfillViolations(), 0);
+    }
 }

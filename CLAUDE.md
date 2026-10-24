@@ -79,6 +79,14 @@ Full design: `spec.md`.
 - `test/RouletteTypes.t.sol` - library tests, mask fuzz tests against a reference implementation
 - `test/invariant/` - stateful invariants (exact Roulette solvency, no deficit, vault balance = LP flows + house PnL, reserve coverage)
 - `test/gas/CallbackGas.t.sol` - callback gas benchmark; also run it with `forge test --isolate --match-path test/gas/CallbackGas.t.sol`
+- `test/fuzz/CryticTester.sol` - Echidna / Medusa entry point: same Handler, properties as `property_*` bools (keep in sync with `test/invariant/`)
+
+Echidna and Medusa (need `crytic-compile`; corpora go to `crytic/`, gitignored):
+
+```bash
+medusa fuzz --timeout 300
+echidna . --contract CryticTester --config echidna.yaml --timeout 300 --workers 8
+```
 
 Coverage needs `forge coverage --ir-minimum` (stack too deep without the optimizer).
 
