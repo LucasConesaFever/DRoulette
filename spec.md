@@ -92,7 +92,7 @@ With `totalAssets = balanceOf`, the vault is exposed to the classic first-deposi
 ### 5.1 Custody
 
 - `depositCredits(uint256 amount)`: `safeTransferFrom(player, this, amount)`, `credits += amount`. `nonReentrant`.
-- `withdrawCredits(uint256 amount)`: `credits -= amount`, `safeTransfer(player, amount)`. `nonReentrant`. Allowed in OPEN and CALCULATING (stakes are already debited). Blocked in DEFICIT (§5.7).
+- `withdrawCredits(uint256 amount)`: `credits -= amount`, `safeTransfer(player, amount)`. `nonReentrant`. Allowed in every state, including CALCULATING (stakes are already debited) and DEFICIT (first come, first served, §5.7).
 - `addCredits` / `removeCredits` / `OnlyVault` are removed.
 - Roulette needs an `IERC20 usdc` reference, read from `vault.asset()` in the constructor (`immutable`).
 
@@ -182,7 +182,7 @@ While in `DEFICIT`:
 
 - `placeBet` and `spin` revert.
 - LP deposits/withdrawals are locked (`lpLocked()`).
-- `withdrawCredits` is blocked. Roulette holds less USDC than `totalCredits`, so allowing withdrawals would pay the first players in full and leave the last ones unpaid. Blocking keeps everyone whole until the deficit is covered.
+- `withdrawCredits` stays open, first come, first served. Roulette holds less USDC than `totalCredits`, so once its balance runs out, the remaining withdrawals revert (`InsufficientRouletteBalance()`) until `coverDeficit()` brings USDC back. This is accepted: the case is very unlikely, and blocking would trap every player's funds.
 - To unfreeze, someone sends USDC to the vault with a plain transfer (owner or treasury top-up). LP `deposit` stays blocked: new shares would be minted before the loss is paid, pushing part of it onto the new LP.
 
 `coverDeficit()` (permissionless): pulls `min(deficit, usdc.balanceOf(vault))` from the vault. When `deficit` reaches 0, state goes back to OPEN and the LP lock lifts. Emits `DeficitCovered(amount, remaining)`.
@@ -262,10 +262,11 @@ Estimated per-bet cost in the callback after §5.2–§5.9 (to be confirmed with
 | Payout model | Credit winners automatically in the callback. Claims were evaluated: the callback still needs the loop for the net amount, so they only save the winners' credit writes, while each winner pays ~50k+ for a claim tx and `totalLost` can't be tracked |
 | Per-number payout table | Rejected: extra writes on every bet, only useful together with claims |
 | Settlement loop | One loop; winners are credited before the vault check (§5.3) |
-| Vault shortfall | Pull what's available, record a deficit, freeze until covered (§5.7) |
+| Vault shortfall | Pull what's available, record a deficit, freeze bets/spins until covered (§5.7) |
+| Withdrawals during DEFICIT | Allowed, first come, first served (§5.7) |
+| VRF timeout refund | Kept, `vrfTimeout` default 1 hour (§5.8) |
 
 ## 10. Open questions
 
-1. **Withdrawals during DEFICIT (§5.7)**: block `withdrawCredits` (proposed, keeps all players whole) or allow it first-come-first-served?
-2. **VRF timeout refund (§5.8)**: keep it, default 1 hour?
-3. **Defaults**: `maxBetsPerRound = 100` and `callbackGasLimit = 2_500_000`, to confirm with the benchmark during implementation.
+1. **Bets per round (§5.10)**: owner-configurable `maxBetsPerRound`, a hard-coded constant, or no cap at all?
+2. **Defaults**: `callbackGasLimit = 2_500_000` and the bet cap value, to confirm with the benchmark during implementation.
