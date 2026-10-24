@@ -379,27 +379,43 @@ contract RouletteTypesTest is Test {
         if (n == 0) return false;
         if (betType == RouletteTypes.BetType.DOZEN) return (n - 1) / 12 + 1 == numbers[0];
         if (betType == RouletteTypes.BetType.COLUMN) return n % 3 == numbers[0] % 3;
-        if (betType == RouletteTypes.BetType.RED) return RouletteTypes.getNumberColor(n) == RouletteTypes.Color.RED;
-        if (betType == RouletteTypes.BetType.BLACK) return RouletteTypes.getNumberColor(n) == RouletteTypes.Color.BLACK;
+        // Explicit red list: getNumberColor is derived from RED_MASK, so it can't be the reference
+        if (betType == RouletteTypes.BetType.RED) return _isRed(n);
+        if (betType == RouletteTypes.BetType.BLACK) return !_isRed(n);
         if (betType == RouletteTypes.BetType.EVEN) return n % 2 == 0;
         if (betType == RouletteTypes.BetType.ODD) return n % 2 == 1;
         if (betType == RouletteTypes.BetType.LOW) return n <= 18;
         return n >= 19;
     }
 
+    function _isRed(uint8 n) internal pure returns (bool) {
+        uint8[18] memory reds = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
+        for (uint256 i; i < 18; ++i) {
+            if (reds[i] == n) return true;
+        }
+        return false;
+    }
+
     function _countBits(uint40 mask) internal pure returns (uint256 count) {
         for (; mask != 0; mask &= mask - 1) ++count;
     }
 
-    function testFuzz_Mask_OutsideBetsMatchReference(uint8 betTypeSeed, uint8 selector, uint8 n) public pure {
-        RouletteTypes.BetType betType = RouletteTypes.BetType(bound(betTypeSeed, 5, 12));
-        n = uint8(bound(n, 0, 36));
-        uint8[] memory numbers;
-        if (betType == RouletteTypes.BetType.DOZEN || betType == RouletteTypes.BetType.COLUMN) {
-            numbers = new uint8[](1);
-            numbers[0] = uint8(bound(selector, 1, 3));
+    /// @dev Exhaustive over all outside bets and all 37 pockets (the domain is small enough to enumerate)
+    function test_Mask_OutsideBetsMatchReference_AllPockets() public pure {
+        for (uint8 t = 5; t <= 12; ++t) {
+            RouletteTypes.BetType betType = RouletteTypes.BetType(t);
+            uint8 selectors = (betType == RouletteTypes.BetType.DOZEN || betType == RouletteTypes.BetType.COLUMN) ? 3 : 1;
+            for (uint8 sel = 1; sel <= selectors; ++sel) {
+                uint8[] memory numbers;
+                if (selectors == 3) {
+                    numbers = new uint8[](1);
+                    numbers[0] = sel;
+                }
+                for (uint8 n; n <= 36; ++n) {
+                    assertEq(_win(betType, numbers, n), _referenceWin(betType, numbers, n));
+                }
+            }
         }
-        assertEq(_win(betType, numbers, n), _referenceWin(betType, numbers, n));
     }
 
     function testFuzz_Mask_StraightUpCoversOnlyItsNumber(uint8 number, uint8 n) public pure {

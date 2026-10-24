@@ -54,9 +54,21 @@ contract RouletteInvariantTest is StdInvariant, BaseTest {
         assertEq(roulette.totalCredits(), sum);
     }
 
-    /// @notice House stats are consistent with each other
-    function invariant_HouseStatsConsistent() public view {
-        (uint256 wagered, uint256 paidOut, int256 netPnl) = roulette.getHouseStats();
-        assertEq(netPnl, int256(wagered) - int256(paidOut));
+    /// @notice Credits are conserved: deposits + refunds + payouts - withdrawals - stakes, all from handler inputs
+    function invariant_CreditsConservation() public view {
+        (, uint256 paidOut,) = roulette.getHouseStats();
+        assertEq(
+            roulette.totalCredits(),
+            handler.ghostCreditsDeposited() + handler.ghostStakesRefunded() + paidOut
+                - handler.ghostCreditsWithdrawn() - handler.ghostStakesPlaced()
+        );
+    }
+
+    /// @notice House wagered counts exactly the stakes of settled rounds
+    function invariant_HouseWageredIsSettledStakes() public view {
+        (uint256 wagered,,) = roulette.getHouseStats();
+        RouletteTypes.Round memory round = roulette.getRound(roulette.currentRoundId());
+        uint256 openStakes = round.completed ? 0 : round.totalBets;
+        assertEq(wagered, handler.ghostStakesPlaced() - handler.ghostStakesRefunded() - openStakes);
     }
 }

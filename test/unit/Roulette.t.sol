@@ -366,6 +366,163 @@ contract RouletteTest is BaseTest {
         assertEq(netPnl, int256(totalBets) - int256(uint256(round.totalPayout)));
     }
 
+    /*//////////////////////////////////////////////////////////////
+                     SETTLEMENT ORACLE / REFUND INVERSE
+    //////////////////////////////////////////////////////////////*/
+    /// @dev Builds a valid bet of any type from seeds
+    function _randomBet(uint256 typeSeed, uint256 numberSeed)
+        internal
+        pure
+        returns (RouletteTypes.BetType betType, uint8[] memory numbers)
+    {
+        betType = RouletteTypes.BetType(typeSeed % 13);
+        if (betType == RouletteTypes.BetType.STRAIGHT_UP) {
+            numbers = new uint8[](1);
+            numbers[0] = uint8(numberSeed % 37);
+        } else if (betType == RouletteTypes.BetType.SPLIT) {
+            numbers = new uint8[](2);
+            numbers[0] = uint8(numberSeed % 35) + 1;
+            numbers[1] = numbers[0] + 1;
+        } else if (betType == RouletteTypes.BetType.STREET) {
+            numbers = new uint8[](3);
+            uint8 first = uint8((numberSeed % 12) * 3 + 1);
+            (numbers[0], numbers[1], numbers[2]) = (first, first + 1, first + 2);
+        } else if (betType == RouletteTypes.BetType.CORNER) {
+            numbers = new uint8[](4);
+            uint8 first = uint8((numberSeed % 11) * 3 + 1);
+            (numbers[0], numbers[1], numbers[2], numbers[3]) = (first, first + 1, first + 3, first + 4);
+        } else if (betType == RouletteTypes.BetType.LINE) {
+            numbers = new uint8[](6);
+            uint8 first = uint8((numberSeed % 11) * 3 + 1);
+            for (uint8 i; i < 6; ++i) {
+                numbers[i] = first + i;
+            }
+        } else if (betType == RouletteTypes.BetType.DOZEN || betType == RouletteTypes.BetType.COLUMN) {
+            numbers = new uint8[](1);
+            numbers[0] = uint8(numberSeed % 3) + 1;
+        }
+    }
+
+    /// @dev Independent oracle: table rules and odds written out, no use of masks or getPayoutMultiplier
+    function _referencePayout(RouletteTypes.BetType betType, uint8[] memory numbers, uint8 n, uint256 amount)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint8[13] memory odds = [35, 17, 11, 8, 5, 2, 2, 1, 1, 1, 1, 1, 1];
+        bool won;
+        if (uint8(betType) <= uint8(RouletteTypes.BetType.LINE)) {
+            for (uint256 i; i < numbers.length; ++i) {
+                if (numbers[i] == n) won = true;
+            }
+        } else if (n != 0) {
+            uint8[18] memory reds = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
+            bool red;
+            for (uint256 i; i < 18; ++i) {
+                if (reds[i] == n) red = true;
+            }
+            if (betType == RouletteTypes.BetType.DOZEN) won = (n - 1) / 12 + 1 == numbers[0];
+            else if (betType == RouletteTypes.BetType.COLUMN) won = n % 3 == numbers[0] % 3;
+            else if (betType == RouletteTypes.BetType.RED) won = red;
+            else if (betType == RouletteTypes.BetType.BLACK) won = !red;
+            else if (betType == RouletteTypes.BetType.EVEN) won = n % 2 == 0;
+            else if (betType == RouletteTypes.BetType.ODD) won = n % 2 == 1;
+            else if (betType == RouletteTypes.BetType.LOW) won = n <= 18;
+            else won = n >= 19;
+        }
+        return won ? amount * (uint256(odds[uint8(betType)]) + 1) : 0;
+    }
+
+    // Scratch storage for the oracle / inverse fuzz tests (keeps them under the stack limit)
+    address[3] internal s_bettors;
+    uint256[3] internal s_expected;
+    uint256[3] internal s_creditsBefore;
+    RouletteTypes.PlayerStatsView[3] internal s_statsBefore;
+
+    function _placeRandomBets(uint256[8] memory seeds, uint256 count, uint8 n) internal returns (uint256 total) {
+        for (uint256 i; i < count; ++i) {
+            (RouletteTypes.BetType betType, uint8[] memory numbers) = _randomBet(seeds[i], seeds[i] >> 8);
+            uint256 amount = bound(seeds[i] >> 16, MIN_BET, 10e6);
+            _bet(s_bettors[i % 3], betType, numbers, amount);
+            uint256 payout = _referencePayout(betType, numbers, n, amount);
+            s_expected[i % 3] += payout;
+            total += payout;
+        }
+    }
+
+    function _fundBettors() internal {
+        s_bettors = [player1, player2, player3];
+        for (uint256 p; p < 3; ++p) {
+            _fundCredits(s_bettors[p], 8 * MAX_BET);
+        }
+    }
+
+    function _snapshotBettors() internal {
+        for (uint256 p; p < 3; ++p) {
+            s_creditsBefore[p] = roulette.credits(s_bettors[p]);
+            s_statsBefore[p] = roulette.getPlayerStats(s_bettors[p]);
+        }
+    }
+
+    /// @notice Settlement credits every player exactly what the table rules say, and getBetResult agrees
+    function testFuzz_Settle_MatchesReferenceOracle(uint256 word, uint256[8] memory seeds) public {
+        _fundBettors();
+        uint8 n = uint8(word % 37);
+        uint256 expectedTotal = _placeRandomBets(seeds, 8, n);
+        _snapshotBettors();
+
+        uint256 roundId = _spinAndFulfill(word);
+
+        assertEq(roulette.getRound(roundId).winningNumber, n);
+        assertEq(roulette.getRound(roundId).totalPayout, expectedTotal, "round total");
+        for (uint256 p; p < 3; ++p) {
+            assertEq(roulette.credits(s_bettors[p]) - s_creditsBefore[p], s_expected[p], "player credited");
+        }
+        uint256 viewTotal;
+        for (uint256 betId = 1; betId <= 8; ++betId) {
+            (bool settled,, uint256 payout) = roulette.getBetResult(betId, roundId);
+            assertTrue(settled);
+            viewTotal += payout;
+        }
+        assertEq(viewTotal, expectedTotal, "getBetResult agrees with settlement");
+        _assertRouletteSolvent();
+    }
+
+    /// @notice Inverse: placing bets then refunding the round restores credits, stats and the vault
+    function testFuzz_RefundRound_RestoresPreBetState(uint256[8] memory seeds) public {
+        _fundBettors();
+        // Earlier settled history, so the restore isn't from an all-zero state
+        _betRed(player1, 5e6);
+        _spinAndFulfill(RED_NUMBER);
+
+        _snapshotBettors();
+        uint256 totalCreditsBefore = roulette.totalCredits();
+        uint256 vaultBefore = vault.totalAssets();
+        (uint256 wageredBefore, uint256 paidBefore,) = roulette.getHouseStats();
+
+        _placeRandomBets(seeds, 6, 0);
+        _spin();
+        vm.warp(block.timestamp + VRF_TIMEOUT);
+        vm.prank(owner);
+        roulette.refundRound();
+
+        for (uint256 p; p < 3; ++p) {
+            assertEq(roulette.credits(s_bettors[p]), s_creditsBefore[p]);
+            RouletteTypes.PlayerStatsView memory stats = roulette.getPlayerStats(s_bettors[p]);
+            assertEq(stats.totalBets, s_statsBefore[p].totalBets);
+            assertEq(stats.totalWagered, s_statsBefore[p].totalWagered);
+            assertEq(stats.totalWon, s_statsBefore[p].totalWon);
+            assertEq(stats.totalLost, s_statsBefore[p].totalLost);
+        }
+        assertEq(roulette.totalCredits(), totalCreditsBefore);
+        assertEq(vault.totalAssets(), vaultBefore);
+        (uint256 wagered, uint256 paid,) = roulette.getHouseStats();
+        assertEq(wagered, wageredBefore);
+        assertEq(paid, paidBefore);
+        assertEq(roulette.reservedLiquidity(), 0);
+        _assertRouletteSolvent();
+    }
+
     function test_Settle_PlayerStats() public {
         _fundCredits(player1, 100e6);
         _betRed(player1, 10e6);

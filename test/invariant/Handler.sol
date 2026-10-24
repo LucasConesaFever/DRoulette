@@ -27,6 +27,12 @@ contract Handler is Test {
     uint256 public ghostLpWithdrawn;
     uint256 public ghostPendingRequestId;
     uint256 public ghostSettledRounds;
+    uint256 public ghostRefundedRounds;
+    // Player-side flows, tracked from the handler's own inputs (independent of Roulette's bookkeeping)
+    uint256 public ghostCreditsDeposited;
+    uint256 public ghostCreditsWithdrawn;
+    uint256 public ghostStakesPlaced;
+    uint256 public ghostStakesRefunded;
 
     constructor(
         Roulette _roulette,
@@ -57,6 +63,7 @@ contract Handler is Test {
         usdc.approve(address(roulette), amount);
         roulette.depositCredits(amount);
         vm.stopPrank();
+        ghostCreditsDeposited += amount;
     }
 
     function withdrawCredits(uint256 actorSeed, uint256 amount) external {
@@ -66,6 +73,7 @@ contract Handler is Test {
         amount = bound(amount, 1, available);
         vm.prank(player);
         roulette.withdrawCredits(amount);
+        ghostCreditsWithdrawn += amount;
     }
 
     function placeBet(uint256 actorSeed, uint256 betTypeSeed, uint256 numberSeed, uint256 amount) external {
@@ -88,6 +96,7 @@ contract Handler is Test {
 
         vm.prank(player);
         roulette.placeBet(betType, numbers, amount);
+        ghostStakesPlaced += amount;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -111,6 +120,28 @@ contract Handler is Test {
         vrfCoordinator.fulfillRandomWordsWithOverride(ghostPendingRequestId, address(roulette), words);
         ghostPendingRequestId = 0;
         ++ghostSettledRounds;
+    }
+
+    /// @dev VRF never answered: refund after the timeout, then a late answer must change nothing
+    function refundAndLateFulfill(uint256 word) external {
+        if (ghostPendingRequestId == 0) return;
+        uint256 roundId = roulette.currentRoundId();
+        uint256 stakes = roulette.getRound(roundId).totalBets;
+
+        vm.warp(block.timestamp + roulette.vrfTimeout());
+        vm.prank(owner);
+        roulette.refundRound();
+        ghostStakesRefunded += stakes;
+        ++ghostRefundedRounds;
+
+        uint256 creditsBefore = roulette.totalCredits();
+        uint256[] memory words = new uint256[](1);
+        words[0] = word;
+        // The mock swallows the callback revert; the refunded round must stay unsettled
+        vrfCoordinator.fulfillRandomWordsWithOverride(ghostPendingRequestId, address(roulette), words);
+        ghostPendingRequestId = 0;
+        assertEq(roulette.totalCredits(), creditsBefore, "late VRF answer changed credits");
+        assertTrue(roulette.getRound(roundId).refunded);
     }
 
     /*//////////////////////////////////////////////////////////////
