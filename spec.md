@@ -81,7 +81,7 @@ maxDeposit / maxMint      → 0 if lpLocked(), else capacity left
 maxWithdraw / maxRedeem   → 0 if lpLocked(), else capped so totalAssets() stays >= reservedLiquidity()
 ```
 
-The owner can override the lock in an emergency (`setLpLockOverride(bool)`), to pair with `emergencyResumeBetting`.
+There is no override: without a pending request, `emergencyStopBetting` / `emergencyResumeBetting` lock and unlock LPs; a stuck request goes through `refundRound()`. An override would let LPs act on a VRF result already visible in the mempool.
 
 ### 4.4 Inflation / donation protection
 
@@ -111,7 +111,7 @@ struct Bet {
 
 - `placeBet` keeps its current signature (`uint8[] numbers`): it validates the numbers as today, then builds the mask. The frontend call doesn't change.
 - `checkWin` becomes `(numbersMask >> winningNumber) & 1`.
-- Removed from `Bet`: `numbers` array, `timestamp`, `settled`, `won`, `payout`. Settled = `rounds[roundId].completed`. Won/payout are derived by a view `getBetResult(betId)` from the round's winning number. The bet time is in the `BetPlaced` event.
+- Removed from `Bet`: `numbers` array, `timestamp`, `settled`, `won`, `payout`. Settled = `rounds[roundId].completed`. Won/payout are derived by a view `getBetResult(betId, roundId)` from the round's winning number (the bet doesn't store its round; `BetPlaced` has it). The bet time is in the `BetPlaced` event.
 - Bets of a round have contiguous IDs (only one round is open at a time). So `Round` stores `firstBetId` and `lastBetId`, and the `roundBets` array is removed. This saves one array write per bet and one read per bet in the callback. `getRoundBets(roundId)` stays as a view that returns the range.
 - `placeBet` requires `amount <= type(uint48).max` (already implied by `maxBet`).
 
@@ -173,7 +173,7 @@ No extra storage writes: Roulette already tracks the state and the round exposur
 
 ### 5.7 Deficit backstop
 
-Only reachable if the safeguards above are bypassed (owner raises `maxExposureBps` mid-round, uses the emergency LP unlock, etc.). The callback must not revert, so:
+Only reachable if the safeguards above are bypassed (in practice only an external loss of vault USDC, such as a token seizure or blacklist: the exposure limit and the LP reserve rule out every internal path). The callback must not revert, so:
 
 1. Pull what the vault has: `pulled = usdc.balanceOf(vault)`, `vault.fundPayout(pulled)`.
 2. Record `deficit = net - pulled`, set state `DEFICIT`, emit `DeficitRecorded(roundId, deficit)`. The round still completes; players are already credited.
@@ -196,6 +196,8 @@ Separate failure from §5.7: Chainlink never calls back, so there is no winning 
 - Marks the round completed (no winning number), increments `currentRoundId`, sets state to OPEN. Emits `RoundRefunded(roundId)`.
 - `vrfTimeout` is owner-configurable, default 1 hour.
 
+`emergencyResumeBetting` reverts while a VRF request is pending for the current round (`Roulette__SpinPending`): reopening bets then would let players bet after seeing the result in the mempool. A stuck spin goes through `refundRound()` instead. Neither emergency function can enter or leave `DEFICIT`.
+
 ### 5.9 Stats
 
 Kept on-chain, but arranged so losing bets need no write in the callback:
@@ -206,17 +208,20 @@ Kept on-chain, but arranged so losing bets need no write in the callback:
 
 ### 5.10 Callback gas budget
 
-Estimated per-bet cost in the callback after §5.2–§5.9 (to be confirmed with a benchmark during implementation):
+Callback cost, measured by `test/gas/CallbackGas.t.sol`:
 
-| | Today (measured) | New (estimated) |
+| | Before | After |
 |---|---|---|
-| Fixed per round | ~101k | ~100k |
-| Losing bet | ~46.5k | ~3k (one slot read + mask check) |
-| Winning bet | ~75k | ~12–30k (read + credits + stats + event) |
-| Round of 50 bets, 10 winners | ~2.7M | ~0.3–0.5M |
+| Fixed per round | ~101k | ~131k (includes the net transfer with the vault) |
+| Losing bet | ~46.5k | ~0.75k |
+| Winning bet, worst case | ~75k | ~46.5k (fresh player: credits and win stats go zero → non-zero, ~22k each) |
+| 45 bets, all winning | ~3.5M | ~2.22M |
+| 45 bets, all losing | ~2.2M | ~0.12M |
+
+A winner who already has credits and earlier wins costs ~10–15k; the cap has to use the worst case.
 
 - Add a constant `MAX_BETS_PER_ROUND` (no setter). `placeBet` reverts with `RoundFull()` past it.
-- Its value comes from the benchmark: the largest number of bets that all win and still settle within `callbackGasLimit`, with a safety margin. Expected around 75.
+- Value: **45**, from the benchmark. 45 all-winning worst-case bets use ~2.22M gas, leaving ~11% of the 2.5M limit; the test asserts at least 10% headroom.
 - `callbackGasLimit` stays `immutable`. Deploy scripts raise it from `500_000` to `2_500_000` (Chainlink's usual maximum).
 - A test asserts that a full round of `MAX_BETS_PER_ROUND` winning bets fits in `callbackGasLimit`.
 
@@ -225,13 +230,13 @@ Why a cap is needed: without one, a busy round could run out of callback gas and
 ## 6. Events
 
 - Roulette: `CreditsDeposited(player, amount)`, `CreditsWithdrawn(player, amount)`, `BetWon(betId, player, payout)` (replaces `BetSettled`; losers emit nothing), `RoundSettled(roundId, totalBets, totalPayout, int256 netToPlayers)`, `DeficitRecorded(roundId, deficit)`, `DeficitCovered(amount, remaining)`, `RoundRefunded(roundId)`, `MaxExposureBpsUpdated`, `VrfTimeoutUpdated`.
-- Vault: `PayoutFunded(amount)`, `LpLockOverrideUpdated(bool)`, `RouletteSet`, `MaxCapacityUpdated`. Profit has no event (plain transfer).
+- Vault: `PayoutFunded(amount)`, `RouletteSet`, `MaxCapacityUpdated`. Profit has no event (plain transfer).
 
 ## 7. Impact on other code
 
 | Area | Change |
 |---|---|
-| `src/libraries/RouletteTypes.sol` | New packed `Bet`, `Round` gets `firstBetId`/`lastBetId`, `RouletteState.DEFICIT`, `numbersToMask()`, mask-based `checkWin`. `validateBet` unchanged. |
+| `src/libraries/RouletteTypes.sol` | New packed `Bet`, `Round` gets `firstBetId`/`lastBetId`, `RouletteState.DEFICIT`, `toNumbersMask()` (reverts on numbers above 36), mask-based `checkWin`. `validateBet` unchanged. |
 | `test/Roulette.t.sol` | ~66 call sites to `depositCredits`/vault stats. Rewrite the credit tests against Roulette. Replace the `lpCapital`/profit/loss tests with share-price tests. Add: invariant test for §5.4; LP reservation and lock; deficit path; refund path; gas test for a full round. |
 | `test/RouletteTypes.t.sol` | Add mask conversion tests; `checkWin` tests switch to masks. |
 | `script/DeployAndSetupLocal.s.sol`, `Interactions.s.sol`, `DeployRoulette.s.sol`, `HelperConfig.s.sol` | Approve/deposit credits against Roulette. Replace `lpCapital`/`getVaultStats`/`getMaxBet` logs. New `callbackGasLimit` default. |
@@ -268,11 +273,11 @@ Why a cap is needed: without one, a busy round could run out of callback gas and
 | Vault shortfall | Pull what's available, record a deficit, freeze bets/spins until covered (§5.7) |
 | Withdrawals during DEFICIT | Allowed, first come, first served (§5.7) |
 | VRF timeout refund | Kept, `vrfTimeout` default 1 hour (§5.8) |
-| Bets per round | Constant `MAX_BETS_PER_ROUND`, value from the benchmark; `callbackGasLimit` stays immutable at `2_500_000` (§5.10) |
+| Bets per round | Constant `MAX_BETS_PER_ROUND = 45`, from the benchmark; `callbackGasLimit` stays immutable at `2_500_000` (§5.10) |
 
 ## 10. Open questions
 
-1. **`MAX_BETS_PER_ROUND` value**: set from the benchmark during implementation (expected ~75).
+None. `MAX_BETS_PER_ROUND = 45` was set from the benchmark (§5.10).
 
 ## 11. Future upgrade: settlement outside the VRF callback
 

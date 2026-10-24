@@ -275,19 +275,6 @@ export const VAULT_ABI = [
   },
   {
     "type": "function",
-    "name": "lpLockOverride",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "maxCapacity",
     "inputs": [],
     "outputs": [
@@ -565,19 +552,6 @@ export const VAULT_ABI = [
   },
   {
     "type": "function",
-    "name": "setLpLockOverride",
-    "inputs": [
-      {
-        "name": "_lpLockOverride",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "setMaxCapacity",
     "inputs": [
       {
@@ -788,19 +762,6 @@ export const VAULT_ABI = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "LpLockOverrideUpdated",
-    "inputs": [
-      {
-        "name": "lpLockOverride",
-        "type": "bool",
-        "indexed": false,
-        "internalType": "bool"
       }
     ],
     "anonymous": false
@@ -2709,6 +2670,11 @@ export const ROULETTE_ABI = [
   {
     "type": "error",
     "name": "Roulette__NothingToCover",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Roulette__OnlyVrfCoordinator",
     "inputs": []
   },
   {

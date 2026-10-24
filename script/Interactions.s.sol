@@ -260,7 +260,6 @@ contract GetVaultInfo is Script {
         console.log("Max Capacity:", vault.maxCapacity() / 1e6, "USDC");
         console.log("Max Deposit:", vault.maxDeposit(address(0)) / 1e6, "USDC");
         console.log("LP Locked:", vault.isLpLocked());
-        console.log("LP Lock Override:", vault.lpLockOverride());
 
         if (address(roulette) == address(0)) {
             console.log("===========================================\n");

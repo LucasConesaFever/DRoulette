@@ -148,23 +148,17 @@ contract RouletteVaultTest is BaseTest {
     /*//////////////////////////////////////////////////////////////
                                 LP LOCK
     //////////////////////////////////////////////////////////////*/
-    function test_LpLockOverride_IgnoresRouletteLock() public {
+    function test_EmergencyStop_LocksLpsUntilResumed() public {
         _lpDeposit(lp1, LP_LIQUIDITY);
         vm.prank(owner);
         roulette.emergencyStopBetting();
+        assertTrue(vault.isLpLocked());
         assertEq(vault.maxRedeem(lp1), 0);
 
         vm.prank(owner);
-        vault.setLpLockOverride(true);
-
+        roulette.emergencyResumeBetting();
         assertFalse(vault.isLpLocked());
         assertEq(vault.maxWithdraw(lp1), LP_LIQUIDITY);
-    }
-
-    function test_LpLockOverride_OnlyOwner() public {
-        vm.prank(lp1);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, lp1));
-        vault.setLpLockOverride(true);
     }
 
     function test_Ownership_TwoStep() public {

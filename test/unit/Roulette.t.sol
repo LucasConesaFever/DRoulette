@@ -414,6 +414,25 @@ contract RouletteTest is BaseTest {
         roulette.rawFulfillRandomWords(12345, words);
     }
 
+    /// @dev The owner can call the inherited setCoordinator, but that must not let them pick numbers
+    function test_Fulfill_OwnerSetCoordinatorCannotPickNumbers() public {
+        _fundCredits(player1, 10e6);
+        _betStraight(player1, 17, 10e6);
+        uint256 requestId = _spin();
+
+        vm.prank(owner);
+        roulette.setCoordinator(owner);
+
+        uint256[] memory words = new uint256[](1);
+        words[0] = 17;
+        vm.prank(owner);
+        vm.expectRevert(Roulette.Roulette__OnlyVrfCoordinator.selector);
+        roulette.rawFulfillRandomWords(requestId, words);
+
+        (address coordinator,,,,) = roulette.getVrfConfig();
+        assertEq(coordinator, address(vrfCoordinator));
+    }
+
     function test_Fulfill_RevertWhen_AlreadyFulfilled() public {
         _fundCredits(player1, 10e6);
         _betRed(player1, 1e6);

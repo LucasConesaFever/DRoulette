@@ -34,15 +34,12 @@ contract RouletteVault is ERC4626, Ownable2Step, ReentrancyGuardTransient {
 
     IRouletteLiquidity public roulette;
     uint256 public maxCapacity;
-    /// @notice Emergency switch: when true, Roulette's lpLocked() is ignored
-    bool public lpLockOverride;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
     event RouletteSet(address indexed roulette);
     event MaxCapacityUpdated(uint256 oldCapacity, uint256 newCapacity);
-    event LpLockOverrideUpdated(bool lpLockOverride);
     event PayoutFunded(uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
@@ -102,15 +99,6 @@ contract RouletteVault is ERC4626, Ownable2Step, ReentrancyGuardTransient {
     }
 
     /**
-     * @notice Emergency switch to ignore Roulette's LP lock
-     * @dev Pairs with Roulette's emergency functions if a round gets stuck
-     */
-    function setLpLockOverride(bool _lpLockOverride) external onlyOwner {
-        lpLockOverride = _lpLockOverride;
-        emit LpLockOverrideUpdated(_lpLockOverride);
-    }
-
-    /**
      * @notice Send USDC to Roulette to cover a round where players won more than they staked
      * @param amount Amount of USDC to send
      */
@@ -164,7 +152,7 @@ contract RouletteVault is ERC4626, Ownable2Step, ReentrancyGuardTransient {
     }
 
     function _isLpLocked() internal view returns (bool) {
-        if (lpLockOverride || address(roulette) == address(0)) return false;
+        if (address(roulette) == address(0)) return false;
         return roulette.lpLocked();
     }
 

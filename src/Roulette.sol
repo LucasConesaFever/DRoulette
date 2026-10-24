@@ -8,6 +8,7 @@ import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/Reentrancy
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {VRFConsumerBaseV2Plus} from "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
 import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
+import {IVRFCoordinatorV2Plus} from "@chainlink/contracts/src/v0.8/vrf/dev/interfaces/IVRFCoordinatorV2Plus.sol";
 import {RouletteVault} from "src/RouletteVault.sol";
 import {IRouletteLiquidity} from "src/interfaces/IRouletteLiquidity.sol";
 import {RouletteTypes} from "src/libraries/RouletteTypes.sol";
@@ -32,6 +33,9 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     // Chainlink VRF V2.5
     uint16 private constant REQUEST_CONFIRMATIONS = 3;
     uint32 private constant NUM_WORDS = 1;
+    /// @dev Fixed coordinator. The inherited, owner-callable setCoordinator only changes s_vrfCoordinator,
+    ///      which this contract never uses, so the owner can't swap in a coordinator that picks numbers.
+    IVRFCoordinatorV2Plus private immutable i_vrfCoordinator;
     uint256 private immutable i_subscriptionId;
     bytes32 private immutable i_gasLane;
     uint32 private immutable i_callbackGasLimit;
@@ -128,6 +132,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     error Roulette__VrfTimeoutNotReached(uint256 timeRemaining);
     error Roulette__DeficitOpen();
     error Roulette__SpinPending();
+    error Roulette__OnlyVrfCoordinator();
 
     /*//////////////////////////////////////////////////////////////
                                FUNCTIONS
@@ -161,6 +166,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         uint256 _vrfTimeout
     ) VRFConsumerBaseV2Plus(_vrfCoordinator) {
         if (_maxExposureBps > BPS) revert Roulette__InvalidBps();
+        i_vrfCoordinator = IVRFCoordinatorV2Plus(_vrfCoordinator);
         i_subscriptionId = _subscriptionId;
         i_gasLane = _gasLane;
         i_callbackGasLimit = _callbackGasLimit;
@@ -268,7 +274,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         _setState(RouletteTypes.RouletteState.CALCULATING);
         spinRequestedAt = block.timestamp;
 
-        uint256 requestId = s_vrfCoordinator.requestRandomWords(
+        uint256 requestId = i_vrfCoordinator.requestRandomWords(
             VRFV2PlusClient.RandomWordsRequest({
                 keyHash: i_gasLane,
                 subId: i_subscriptionId,
@@ -493,7 +499,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
             bool nativePayment
         )
     {
-        return (address(s_vrfCoordinator), i_subscriptionId, i_gasLane, i_callbackGasLimit, i_nativePayment);
+        return (address(i_vrfCoordinator), i_subscriptionId, i_gasLane, i_callbackGasLimit, i_nativePayment);
     }
 
     /// @notice Get round ID from VRF request ID
@@ -563,6 +569,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
      *      round in one loop, then moves the round's net amount between Roulette and the vault.
      */
     function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {
+        // rawFulfillRandomWords only checks s_vrfCoordinator, which the owner can change
+        if (msg.sender != address(i_vrfCoordinator)) revert Roulette__OnlyVrfCoordinator();
         uint256 roundId = s_requestIdToRoundId[requestId];
         if (roundId == 0) revert Roulette__InvalidRequestId();
         delete s_requestIdToRoundId[requestId];
