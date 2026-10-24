@@ -623,6 +623,50 @@ contract RouletteTest is BaseTest {
         roulette.refundRound();
     }
 
+    function testFuzz_SetVrfTimeout_RevertWhen_BelowMinimum(uint256 timeout) public {
+        timeout = bound(timeout, 0, roulette.MIN_VRF_TIMEOUT() - 1);
+        vm.prank(owner);
+        vm.expectRevert(Roulette.Roulette__VrfTimeoutTooShort.selector);
+        roulette.setVrfTimeout(timeout);
+    }
+
+    function test_Constructor_RevertWhen_VrfTimeoutBelowMinimum() public {
+        vm.expectRevert(Roulette.Roulette__VrfTimeoutTooShort.selector);
+        new Roulette(
+            address(vrfCoordinator),
+            subscriptionId,
+            GAS_LANE,
+            CALLBACK_GAS_LIMIT,
+            false,
+            address(vault),
+            MIN_BET,
+            MAX_BET,
+            HOUSE_EDGE,
+            SPIN_DELAY,
+            MAX_EXPOSURE_BPS,
+            0
+        );
+    }
+
+    /// @dev Emergency stop restarts the clock: no instant refund using an old spin's timestamp
+    function test_RefundRound_AfterEmergencyStop_WaitsFullTimeout() public {
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        _spinAndFulfill(RED_NUMBER);
+        vm.warp(block.timestamp + VRF_TIMEOUT * 2);
+        _betRed(player1, 1e6);
+
+        vm.startPrank(owner);
+        roulette.emergencyStopBetting();
+        vm.expectRevert(abi.encodeWithSelector(Roulette.Roulette__VrfTimeoutNotReached.selector, VRF_TIMEOUT));
+        roulette.refundRound();
+
+        vm.warp(block.timestamp + VRF_TIMEOUT);
+        roulette.refundRound();
+        vm.stopPrank();
+        assertEq(roulette.credits(player1), 11e6); // 10 - 1 + 2 (red win) - 1 + 1 (refund)
+    }
+
     function test_RefundRound_RevertWhen_NotCalculating() public {
         vm.prank(owner);
         vm.expectRevert(Roulette.Roulette__NotCalculating.selector);

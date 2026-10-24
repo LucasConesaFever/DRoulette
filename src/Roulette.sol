@@ -46,6 +46,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     ///      bet + ~149k fixed, 40 bets ~2.19M of the 2.5M callback gas limit (~12% headroom)
     uint256 public constant MAX_BETS_PER_ROUND = 40;
     uint256 private constant BPS = 10_000;
+    /// @notice Lower bound for vrfTimeout, so the owner can't refund a round right after seeing its result
+    uint256 public constant MIN_VRF_TIMEOUT = 1 hours;
 
     RouletteVault public immutable vault;
     IERC20 public immutable usdc;
@@ -133,6 +135,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     error Roulette__DeficitOpen();
     error Roulette__SpinPending();
     error Roulette__OnlyVrfCoordinator();
+    error Roulette__VrfTimeoutTooShort();
 
     /*//////////////////////////////////////////////////////////////
                                FUNCTIONS
@@ -166,6 +169,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         uint256 _vrfTimeout
     ) VRFConsumerBaseV2Plus(_vrfCoordinator) {
         if (_maxExposureBps > BPS) revert Roulette__InvalidBps();
+        if (_vrfTimeout < MIN_VRF_TIMEOUT) revert Roulette__VrfTimeoutTooShort();
         i_vrfCoordinator = IVRFCoordinatorV2Plus(_vrfCoordinator);
         i_subscriptionId = _subscriptionId;
         i_gasLane = _gasLane;
@@ -378,6 +382,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
 
     /// @notice Update the time after a spin request before the owner can refund the round
     function setVrfTimeout(uint256 _vrfTimeout) external onlyOwner {
+        if (_vrfTimeout < MIN_VRF_TIMEOUT) revert Roulette__VrfTimeoutTooShort();
         emit VrfTimeoutUpdated(vrfTimeout, _vrfTimeout);
         vrfTimeout = _vrfTimeout;
     }
@@ -392,9 +397,13 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         _unpause();
     }
 
-    /// @notice Emergency function to force state to CALCULATING (stops betting)
+    /**
+     * @notice Emergency function to force state to CALCULATING (stops betting)
+     * @dev Restarts the refund clock, so refundRound can't use the previous spin's timestamp
+     */
     function emergencyStopBetting() external onlyOwner {
         if (state == RouletteTypes.RouletteState.DEFICIT) revert Roulette__DeficitOpen();
+        spinRequestedAt = block.timestamp;
         _setState(RouletteTypes.RouletteState.CALCULATING);
     }
 

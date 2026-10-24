@@ -1224,6 +1224,19 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "function",
+    "name": "MIN_VRF_TIMEOUT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "acceptOwnership",
     "inputs": [],
     "outputs": [],
@@ -2713,6 +2726,11 @@ export const ROULETTE_ABI = [
         "internalType": "uint256"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "Roulette__VrfTimeoutTooShort",
+    "inputs": []
   },
   {
     "type": "error",

@@ -194,7 +194,8 @@ Separate failure from §5.7: Chainlink never calls back, so there is no winning 
 - Re-credits each bet's `amount` and rolls back `playerStats.totalWagered` / `totalBets` for those bets.
 - Deletes the `requestId → roundId` mapping, so a late VRF answer reverts with `InvalidRequestId` instead of settling a refunded round.
 - Marks the round completed (no winning number), increments `currentRoundId`, sets state to OPEN. Emits `RoundRefunded(roundId)`.
-- `vrfTimeout` is owner-configurable, default 1 hour.
+- `vrfTimeout` is owner-configurable, default 1 hour, with a hard minimum `MIN_VRF_TIMEOUT = 1 hours` (constructor and setter), so the owner can't refund a round right after seeing its result in the mempool.
+- `emergencyStopBetting` restarts the refund clock (`spinRequestedAt = block.timestamp`), so a stop followed by `refundRound` also waits the full timeout.
 
 `emergencyResumeBetting` reverts while a VRF request is pending for the current round (`Roulette__SpinPending`): reopening bets then would let players bet after seeing the result in the mempool. A stuck spin goes through `refundRound()` instead. Neither emergency function can enter or leave `DEFICIT`.
 
@@ -272,7 +273,7 @@ Why a cap is needed: without one, a busy round could run out of callback gas and
 | Settlement loop | One loop; winners are credited before the vault check (§5.3) |
 | Vault shortfall | Pull what's available, record a deficit, freeze bets/spins until covered (§5.7) |
 | Withdrawals during DEFICIT | Allowed, first come, first served (§5.7) |
-| VRF timeout refund | Kept, `vrfTimeout` default 1 hour (§5.8) |
+| VRF timeout refund | Kept, `vrfTimeout` default 1 hour, minimum 1 hour (§5.8) |
 | Bets per round | Constant `MAX_BETS_PER_ROUND = 45`, from the benchmark; `callbackGasLimit` stays immutable at `2_500_000` (§5.10) |
 
 ## 10. Open questions
