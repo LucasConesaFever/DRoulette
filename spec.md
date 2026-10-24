@@ -215,13 +215,16 @@ Estimated per-bet cost in the callback after §5.2–§5.9 (to be confirmed with
 | Winning bet | ~75k | ~12–30k (read + credits + stats + event) |
 | Round of 50 bets, 10 winners | ~2.7M | ~0.3–0.5M |
 
-- Add `maxBetsPerRound` (owner-configurable, default 100). `placeBet` reverts with `RoundFull()` past it.
-- Make `callbackGasLimit` owner-configurable (today it is `immutable`), so it can be raised together with `maxBetsPerRound`.
-- Default `callbackGasLimit`: worst case (all bets win) × `maxBetsPerRound` + fixed + margin. Proposed `2_500_000`, Chainlink's usual maximum. A test must assert that a full round of winning bets fits.
+- Add a constant `MAX_BETS_PER_ROUND` (no setter). `placeBet` reverts with `RoundFull()` past it.
+- Its value comes from the benchmark: the largest number of bets that all win and still settle within `callbackGasLimit`, with a safety margin. Expected around 75.
+- `callbackGasLimit` stays `immutable`. Deploy scripts raise it from `500_000` to `2_500_000` (Chainlink's usual maximum).
+- A test asserts that a full round of `MAX_BETS_PER_ROUND` winning bets fits in `callbackGasLimit`.
+
+Why a cap is needed: without one, a busy round could run out of callback gas and get stuck until the refund timeout. Worse, an attacker could place hundreds of minimum bets to make every round fail, then get their stakes back through the refund, paying only gas. With the cap, filling a round costs `MAX_BETS_PER_ROUND` real bets that can lose.
 
 ## 6. Events
 
-- Roulette: `CreditsDeposited(player, amount)`, `CreditsWithdrawn(player, amount)`, `BetWon(betId, player, payout)` (replaces `BetSettled`; losers emit nothing), `RoundSettled(roundId, totalBets, totalPayout, int256 netToPlayers)`, `DeficitRecorded(roundId, deficit)`, `DeficitCovered(amount, remaining)`, `RoundRefunded(roundId)`, `MaxExposureBpsUpdated`, `MaxBetsPerRoundUpdated`, `CallbackGasLimitUpdated`, `VrfTimeoutUpdated`.
+- Roulette: `CreditsDeposited(player, amount)`, `CreditsWithdrawn(player, amount)`, `BetWon(betId, player, payout)` (replaces `BetSettled`; losers emit nothing), `RoundSettled(roundId, totalBets, totalPayout, int256 netToPlayers)`, `DeficitRecorded(roundId, deficit)`, `DeficitCovered(amount, remaining)`, `RoundRefunded(roundId)`, `MaxExposureBpsUpdated`, `VrfTimeoutUpdated`.
 - Vault: `PayoutFunded(amount)`, `LpLockOverrideUpdated(bool)`, `RouletteSet`, `MaxCapacityUpdated`. Profit has no event (plain transfer).
 
 ## 7. Impact on other code
@@ -245,7 +248,7 @@ Estimated per-bet cost in the callback after §5.2–§5.9 (to be confirmed with
 - [ ] Bets that push round exposure over `maxExposureBps` of vault TVL revert; the owner can change the limit.
 - [ ] LP withdrawals can't take the vault below `reservedLiquidity()`; all LP actions are capped to 0 during CALCULATING and DEFICIT.
 - [ ] `fulfillRandomWords` never reverts because of vault funds: on a shortfall it records a deficit, and `coverDeficit()` clears it after a top-up.
-- [ ] A round with `maxBetsPerRound` bets that all win settles within `callbackGasLimit`.
+- [ ] A round with `MAX_BETS_PER_ROUND` bets that all win settles within `callbackGasLimit`.
 - [ ] The owner can refund a round after `vrfTimeout`, and a late VRF answer for it reverts.
 - [ ] `getHouseStats()` and `getPlayerStats()` match the sum of settled bets.
 - [ ] All game-rule tests (bet types, payouts, validation) pass with the mask-based bets.
@@ -265,8 +268,39 @@ Estimated per-bet cost in the callback after §5.2–§5.9 (to be confirmed with
 | Vault shortfall | Pull what's available, record a deficit, freeze bets/spins until covered (§5.7) |
 | Withdrawals during DEFICIT | Allowed, first come, first served (§5.7) |
 | VRF timeout refund | Kept, `vrfTimeout` default 1 hour (§5.8) |
+| Bets per round | Constant `MAX_BETS_PER_ROUND`, value from the benchmark; `callbackGasLimit` stays immutable at `2_500_000` (§5.10) |
 
 ## 10. Open questions
 
-1. **Bets per round (§5.10)**: owner-configurable `maxBetsPerRound`, a hard-coded constant, or no cap at all?
-2. **Defaults**: `callbackGasLimit = 2_500_000` and the bet cap value, to confirm with the benchmark during implementation.
+1. **`MAX_BETS_PER_ROUND` value**: set from the benchmark during implementation (expected ~75).
+
+## 11. Future upgrade: settlement outside the VRF callback
+
+Not part of this refactor. It removes the bet cap if rounds ever need more bets than one callback can settle.
+
+**Idea:** `fulfillRandomWords` only saves the winning number. An external process (a keeper) watches the chain, sees the number saved, and settles the bets in one or more transactions.
+
+**Flow:**
+
+1. `spin()` → state CALCULATING, VRF request (unchanged).
+2. `fulfillRandomWords` → saves `winningNumber`, sets state `SETTLING`, emits `WinningNumberSaved(roundId, winningNumber)`. Fixed cost, no loop, so the callback gas limit stops mattering.
+3. Keeper listens for `WinningNumberSaved` (or polls `state` / `rounds[roundId]`) and calls `settle(maxBets)`.
+4. `settle(maxBets)` (permissionless) → processes up to `maxBets` bets from a stored cursor `nextBetToSettle`, credits winners, adds to the round's running `net` in storage.
+5. When the cursor passes `lastBetId`: net transfer with the vault (§5.3, §5.7), round completed, `currentRoundId++`, state OPEN, LP lock lifts.
+
+**What changes compared with this spec:**
+
+- New state `SETTLING`. Bets and spins blocked, LP actions locked (front-running is still possible, since the number is public).
+- Storage cursor and running `net` per round: two extra writes per `settle` call, not per bet.
+- `MAX_BETS_PER_ROUND` goes away. Each `settle` call only has to fit in the block gas limit, and the keeper picks `maxBets`.
+- `settle` is permissionless, so a stuck keeper can't freeze the game: any player who wants their winnings can call it.
+- Players still credited automatically; no claims.
+
+**Costs and risks:**
+
+- At least one extra transaction per round, paid by whoever runs the keeper (the house, or a service like Chainlink Automation / Gelato).
+- Credits arrive a few blocks after the number instead of in the same transaction. The frontend needs a "settling" status.
+- New liveness dependency: if nobody calls `settle`, the round waits. Mitigation: permissionless `settle`, plus a monitoring alert.
+- Refund (§5.8) stays only for VRF never answering; a round in `SETTLING` always has a number and can always be settled.
+
+**When to do it:** when rounds regularly fill `MAX_BETS_PER_ROUND`, or when moving to a chain where the callback gas limit is lower.
