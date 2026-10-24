@@ -556,6 +556,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
 
         if (round.firstBetId == 0) {
             round.firstBetId = betId.toUint64();
+            // forge-lint: disable-next-line(unsafe-typecast) timestamps fit in uint64
             round.timestamp = uint64(block.timestamp); // {s}
             round.winningNumber = type(uint8).max;
         } else if (betId - round.firstBetId >= MAX_BETS_PER_ROUND) { // {count} = {id} - {id}, vs {count}
@@ -587,6 +588,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         // forge-lint: disable-next-line(unsafe-typecast) amount fits in uint48 (checked when storing the bet)
         stats.lastRoundWagered += uint120(amount); // D6{USDC}
         stats.totalBets += 1; // {count}
+        // forge-lint: disable-next-line(unsafe-typecast) timestamps fit in uint40 until ~year 36800
         stats.lastPlayedTimestamp = uint40(block.timestamp); // {s}
         stats.totalWagered += amount; // D6{USDC}
     }
