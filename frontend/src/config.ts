@@ -1,4 +1,6 @@
-// Contract addresses deployed to Anvil
+// Contract addresses deployed to Anvil.
+// Update after redeploying (DeployAll / DeployWithVRF print them): the refactored contracts
+// cannot be reused with an old deployment, since vault.setRoulette can only be called once.
 export const CONTRACTS = {
   USDC: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
   VAULT: '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9',
@@ -9,7 +11,7 @@ export const CONTRACTS = {
 // Owner/Admin wallet (Account 0 from Anvil)
 export const OWNER_ADDRESS = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 
-// Anvil test accounts with private keys
+// Anvil default test accounts (public, well-known keys from `anvil`). Local development only.
 export const TEST_ACCOUNTS = [
   { address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', privateKey: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80', label: 'Owner/Admin' },
   { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', privateKey: '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d', label: 'Player 1' },

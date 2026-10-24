@@ -8,7 +8,11 @@ import { ERC20_ABI, VAULT_ABI, ROULETTE_ABI, VRF_COORDINATOR_ABI } from './abis'
 const WHEEL_NUMBERS = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26];
 
 // State labels
-const STATE_LABELS = ['Open', 'Spinning', 'Settling'];
+// Matches RouletteTypes.RouletteState: OPEN (0), CALCULATING (1), DEFICIT (2)
+const STATE_LABELS = ['Open', 'Spinning', 'Deficit'];
+const STATE_OPEN = 0;
+const STATE_CALCULATING = 1;
+const STATE_DEFICIT = 2;
 
 // Roulette Wheel Component
 function RouletteWheel({ winningNumber, isSpinning }: { winningNumber: number | null; isSpinning: boolean }) {
@@ -152,6 +156,81 @@ function App() {
     args: address ? [address, CONTRACTS.VAULT] : undefined,
   });
 
+  // Player credits are held by Roulette, so credit deposits need a Roulette allowance
+  const { data: usdcAllowanceRoulette, refetch: refetchAllowanceRoulette } = useReadContract({
+    address: CONTRACTS.USDC,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: address ? [address, CONTRACTS.ROULETTE] : undefined,
+  });
+
+  // Vault (ERC4626) views. Shares have more decimals than USDC (decimals offset), so read them.
+  const { data: vaultDecimalsData } = useReadContract({
+    address: CONTRACTS.VAULT,
+    abi: VAULT_ABI,
+    functionName: 'decimals',
+  });
+  const vaultDecimals = vaultDecimalsData ?? 12;
+
+  const { data: vaultTotalAssets, refetch: refetchVaultTotalAssets } = useReadContract({
+    address: CONTRACTS.VAULT,
+    abi: VAULT_ABI,
+    functionName: 'totalAssets',
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  const { data: sharePrice, refetch: refetchSharePrice } = useReadContract({
+    address: CONTRACTS.VAULT,
+    abi: VAULT_ABI,
+    functionName: 'convertToAssets',
+    args: vaultDecimalsData !== undefined ? [10n ** BigInt(vaultDecimalsData)] : undefined,
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  const { data: vaultMaxCapacity } = useReadContract({
+    address: CONTRACTS.VAULT,
+    abi: VAULT_ABI,
+    functionName: 'maxCapacity',
+  });
+
+  const { data: lpLocked, refetch: refetchLpLocked } = useReadContract({
+    address: CONTRACTS.VAULT,
+    abi: VAULT_ABI,
+    functionName: 'isLpLocked',
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  const { data: lpMaxWithdraw, refetch: refetchLpMaxWithdraw } = useReadContract({
+    address: CONTRACTS.VAULT,
+    abi: VAULT_ABI,
+    functionName: 'maxWithdraw',
+    args: address ? [address] : undefined,
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  const { data: lpMaxRedeem, refetch: refetchLpMaxRedeem } = useReadContract({
+    address: CONTRACTS.VAULT,
+    abi: VAULT_ABI,
+    functionName: 'maxRedeem',
+    args: address ? [address] : undefined,
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  // Roulette house / risk views
+  const { data: deficit, refetch: refetchDeficit } = useReadContract({
+    address: CONTRACTS.ROULETTE,
+    abi: ROULETTE_ABI,
+    functionName: 'deficit',
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  const { data: houseStats, refetch: refetchHouseStats } = useReadContract({
+    address: CONTRACTS.ROULETTE,
+    abi: ROULETTE_ABI,
+    functionName: 'getHouseStats',
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
   const { data: rouletteOwner } = useReadContract({
     address: CONTRACTS.ROULETTE,
     abi: ROULETTE_ABI,
@@ -224,6 +303,14 @@ function App() {
     refetchRoundId();
     refetchLpShares();
     refetchAllowanceVault();
+    refetchAllowanceRoulette();
+    refetchVaultTotalAssets();
+    refetchSharePrice();
+    refetchLpLocked();
+    refetchLpMaxWithdraw();
+    refetchLpMaxRedeem();
+    refetchDeficit();
+    refetchHouseStats();
     refetchPlayerStats();
     refetchPreviewRedeem();
     refetchLastRound();
@@ -231,18 +318,20 @@ function App() {
   };
 
   // Actions
-  const approveIfNeeded = async (amount: bigint): Promise<boolean> => {
-    if (!usdcAllowanceVault || usdcAllowanceVault < amount) {
+  // Approve `spender` (Roulette for credits, Vault for LP deposits) if its allowance is too low
+  const approveIfNeeded = async (spender: 'roulette' | 'vault', amount: bigint): Promise<boolean> => {
+    const allowance = spender === 'roulette' ? usdcAllowanceRoulette : usdcAllowanceVault;
+    if (!allowance || allowance < amount) {
       setIsApproving(true);
       try {
         await writeContractAsync({
           address: CONTRACTS.USDC,
           abi: ERC20_ABI,
           functionName: 'approve',
-          args: [CONTRACTS.VAULT, parseUnits('1000000000', 6)],
+          args: [spender === 'roulette' ? CONTRACTS.ROULETTE : CONTRACTS.VAULT, parseUnits('1000000000', 6)],
         });
         await new Promise(resolve => setTimeout(resolve, 2000));
-        await refetchAllowanceVault();
+        await (spender === 'roulette' ? refetchAllowanceRoulette() : refetchAllowanceVault());
         setIsApproving(false);
         return true;
       } catch (error) {
@@ -257,11 +346,11 @@ function App() {
   const handleDepositCredits = async () => {
     if (!depositAmount) return;
     const amount = parseUSDC(depositAmount);
-    const approved = await approveIfNeeded(amount);
+    const approved = await approveIfNeeded('roulette', amount);
     if (!approved) return;
     writeContract({
-      address: CONTRACTS.VAULT,
-      abi: VAULT_ABI,
+      address: CONTRACTS.ROULETTE,
+      abi: ROULETTE_ABI,
       functionName: 'depositCredits',
       args: [amount],
     });
@@ -270,8 +359,8 @@ function App() {
   const handleWithdrawCredits = () => {
     if (!withdrawAmount) return;
     writeContract({
-      address: CONTRACTS.VAULT,
-      abi: VAULT_ABI,
+      address: CONTRACTS.ROULETTE,
+      abi: ROULETTE_ABI,
       functionName: 'withdrawCredits',
       args: [parseUSDC(withdrawAmount)],
     });
@@ -280,7 +369,7 @@ function App() {
   const handleLpDeposit = async () => {
     if (!lpDepositAmount) return;
     const amount = parseUSDC(lpDepositAmount);
-    const approved = await approveIfNeeded(amount);
+    const approved = await approveIfNeeded('vault', amount);
     if (!approved) return;
     writeContract({
       address: CONTRACTS.VAULT,
@@ -296,7 +385,7 @@ function App() {
       address: CONTRACTS.VAULT,
       abi: VAULT_ABI,
       functionName: 'redeem',
-      args: [parseUnits(lpWithdrawShares, 6), address!, address!],
+      args: [parseUnits(lpWithdrawShares, vaultDecimals), address!, address!],
     });
   };
 
@@ -342,6 +431,16 @@ function App() {
     });
   };
 
+  // Permissionless: pulls whatever the vault can pay towards the open deficit
+  const handleCoverDeficit = () => {
+    writeContract({
+      address: CONTRACTS.ROULETTE,
+      abi: ROULETTE_ABI,
+      functionName: 'coverDeficit',
+      args: [],
+    });
+  };
+
   const handleFaucet = () => {
     if (!faucetAmount) return;
     writeContract({
@@ -353,7 +452,9 @@ function App() {
   };
 
   const isOwner = address?.toLowerCase() === rouletteOwner?.toLowerCase();
-  const isSpinning = gameState === 1;
+  const isSpinning = gameState === STATE_CALCULATING;
+  const isDeficit = gameState === STATE_DEFICIT;
+  const [houseWagered, housePaidOut, houseNetPnl] = houseStats ?? [0n, 0n, 0n];
 
   return (
     <div className="app">
@@ -395,6 +496,21 @@ function App() {
         </button>
       </div>
 
+      {/* Deficit banner: the vault could not fully cover the last round's winnings */}
+      {isDeficit && (
+        <div className="deficit-banner">
+          <div className="deficit-text">
+            <strong>Betting paused: house deficit of ${formatUSDC(deficit ?? 0n)} USDC.</strong>
+            <span>The vault could not fully cover the last round's payouts. Credits stay withdrawable up to Roulette's USDC balance; betting and LP actions resume once the deficit is covered.</span>
+          </div>
+          {isConnected && (
+            <button className="btn-secondary" onClick={handleCoverDeficit} disabled={isWriting}>
+              Cover Deficit
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Game Tab */}
       {activeTab === 'game' && (
         <div className="game-tab">
@@ -431,7 +547,7 @@ function App() {
             {/* Owner Spin Controls - Only visible to owner */}
             {isOwner && (
               <div className="spin-controls">
-                {gameState === 0 && (
+                {gameState === STATE_OPEN && (
                   <button
                     className="btn-spin"
                     onClick={handleSpin}
@@ -440,11 +556,11 @@ function App() {
                     SPIN THE WHEEL
                   </button>
                 )}
-                {gameState === 1 && (
+                {gameState === STATE_CALCULATING && (
                   <>
                     <div className="vrf-status">
                       <span className="vrf-waiting">Waiting for VRF...</span>
-                      {currentRound?.requestId && (
+                      {!!currentRound?.requestId && (
                         <span className="vrf-request-id">Request ID: {currentRound.requestId.toString().slice(0, 8)}...</span>
                       )}
                     </div>
@@ -461,7 +577,7 @@ function App() {
             )}
 
             {/* Non-owner sees spinning status */}
-            {!isOwner && gameState === 1 && (
+            {!isOwner && gameState === STATE_CALCULATING && (
               <div className="spin-controls">
                 <div className="vrf-status">
                   <span className="vrf-waiting">Wheel is spinning... Waiting for result</span>
@@ -583,7 +699,7 @@ function App() {
                   <button
                     className="btn-primary bet-btn"
                     onClick={handlePlaceBet}
-                    disabled={isWriting || gameState !== 0}
+                    disabled={isWriting || gameState !== STATE_OPEN}
                   >
                     Place Bet
                   </button>
@@ -689,14 +805,55 @@ function App() {
             <h2>Your LP Position</h2>
             <div className="vault-position">
               <div className="position-main">
-                <span className="position-label">Withdrawable Value</span>
+                <span className="position-label">Position Value</span>
                 <span className="position-value">${formatUSDC(previewRedeemValue ?? BigInt(0))}</span>
               </div>
               <div className="position-shares">
                 <span className="shares-label">Shares Owned</span>
-                <span className="shares-value">{formatUnits(lpShares ?? BigInt(0), 6)}</span>
+                <span className="shares-value">{formatUnits(lpShares ?? BigInt(0), vaultDecimals)}</span>
+              </div>
+              <div className="position-shares">
+                <span className="shares-label">Withdrawable Now</span>
+                <span className="shares-value">${formatUSDC(lpMaxWithdraw ?? BigInt(0))}</span>
               </div>
             </div>
+            {lpLocked && (
+              <p className="info-text">LP deposits and withdrawals are locked while a spin is pending or a deficit is open.</p>
+            )}
+          </section>
+
+          {/* Vault Stats */}
+          <section className="card">
+            <h2>Vault Stats</h2>
+            <div className="stats-grid stats-grid-3">
+              <div className="stat-item">
+                <span className="stat-value">${formatUSDC(vaultTotalAssets ?? BigInt(0))}</span>
+                <span className="stat-label">Total Assets</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">${sharePrice !== undefined ? formatUnits(sharePrice, 6) : '-'}</span>
+                <span className="stat-label">Share Price</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">${formatUSDC(vaultMaxCapacity ?? BigInt(0))}</span>
+                <span className="stat-label">Max Capacity</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">${formatUSDC(houseWagered)}</span>
+                <span className="stat-label">Total Wagered</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">${formatUSDC(housePaidOut)}</span>
+                <span className="stat-label">Total Paid Out</span>
+              </div>
+              <div className={`stat-item ${houseNetPnl >= 0n ? 'win' : 'loss'}`}>
+                <span className="stat-value">
+                  {houseNetPnl >= 0n ? '+' : '-'}${formatUSDC(houseNetPnl >= 0n ? houseNetPnl : -houseNetPnl)}
+                </span>
+                <span className="stat-label">House PnL</span>
+              </div>
+            </div>
+            <p className="info-text">LP status: {lpLocked ? 'Locked' : 'Open'}</p>
           </section>
 
           {/* LP Deposit */}
@@ -712,7 +869,7 @@ function App() {
                   value={lpDepositAmount}
                   onChange={(e) => setLpDepositAmount(e.target.value)}
                 />
-                <button className="btn-primary" onClick={handleLpDeposit} disabled={isWriting || isApproving}>
+                <button className="btn-primary" onClick={handleLpDeposit} disabled={isWriting || isApproving || !!lpLocked}>
                   {isApproving ? 'Approving...' : 'Deposit'}
                 </button>
               </div>
@@ -732,15 +889,15 @@ function App() {
                   value={lpWithdrawShares}
                   onChange={(e) => setLpWithdrawShares(e.target.value)}
                 />
-                <button className="btn-secondary" onClick={handleLpWithdraw} disabled={isWriting}>
+                <button className="btn-secondary" onClick={handleLpWithdraw} disabled={isWriting || !!lpLocked}>
                   Withdraw
                 </button>
               </div>
               <button
                 className="max-btn"
-                onClick={() => setLpWithdrawShares(formatUnits(lpShares ?? BigInt(0), 6))}
+                onClick={() => setLpWithdrawShares(formatUnits(lpMaxRedeem ?? BigInt(0), vaultDecimals))}
               >
-                Max ({formatUnits(lpShares ?? BigInt(0), 6)} shares)
+                Max ({formatUnits(lpMaxRedeem ?? BigInt(0), vaultDecimals)} shares)
               </button>
             </div>
           </section>

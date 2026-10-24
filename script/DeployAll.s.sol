@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.34;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Roulette} from "../src/Roulette.sol";
-import {RouletteVault} from "../src/RouletteVault.sol";
-import {MockUSDC} from "../src/mocks/MockUSDC.sol";
+import {Roulette} from "src/Roulette.sol";
+import {RouletteVault} from "src/RouletteVault.sol";
+import {MockUSDC} from "src/mocks/MockUSDC.sol";
 import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
 
 contract DeployAll is Script {
     function run() external {
+        // Anvil default account #0 (public, well-known test key). Local Anvil only, never use on a real network.
         uint256 deployerPrivateKey = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
 
         vm.startBroadcast(deployerPrivateKey);
@@ -50,13 +51,15 @@ contract DeployAll is Script {
             address(vrfCoordinator),
             subId,
             bytes32(0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae),
-            500000,
+            2_500_000, // callbackGasLimit
             true,
             address(vault),
             1e6,
             100e6,
             270,
-            60
+            60,
+            1000, // maxExposureBps: 10%
+            3600 // vrfTimeout: 1 hour
         );
         console.log("Roulette:", address(roulette));
 

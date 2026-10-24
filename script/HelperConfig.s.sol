@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.34;
 
 import {Script} from "forge-std/Script.sol";
 import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
-import {MockUSDC} from "../src/mocks/MockUSDC.sol";
+import {MockUSDC} from "src/mocks/MockUSDC.sol";
 
 contract HelperConfig is Script {
     struct NetworkConfig {
@@ -28,7 +28,7 @@ contract HelperConfig is Script {
     uint96 constant BASE_FEE = 0.1 ether; // 0.1 LINK base fee
     uint96 constant GAS_PRICE_LINK = 1e9; // 1 gwei LINK
     int256 constant WEI_PER_UNIT_LINK = 4e15; // 0.004 ETH per LINK
-    uint32 constant CALLBACK_GAS_LIMIT = 500000;
+    uint32 constant CALLBACK_GAS_LIMIT = 2_500_000;
     uint256 constant INITIAL_MOCK_USDC_SUPPLY = 1_000_000e6; // 1M USDC for testing
 
     constructor() {

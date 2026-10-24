@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.34;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Roulette} from "../src/Roulette.sol";
-import {RouletteVault} from "../src/RouletteVault.sol";
-import {MockUSDC} from "../src/mocks/MockUSDC.sol";
+import {Roulette} from "src/Roulette.sol";
+import {RouletteVault} from "src/RouletteVault.sol";
+import {MockUSDC} from "src/mocks/MockUSDC.sol";
 import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
 
 /**
@@ -18,12 +18,14 @@ contract DeployAndSetupLocal is Script {
     uint256 constant HOUSE_EDGE = 270;
     uint256 constant SPIN_DELAY = 10;
     uint256 constant MAX_VAULT_CAPACITY = 10_000_000e6;
+    uint256 constant MAX_EXPOSURE_BPS = 1000; // 10% of vault assets per round
+    uint256 constant VRF_TIMEOUT = 3600; // 1 hour before the owner can refund a stuck round
 
     // VRF V2.5 Mock configuration
     uint96 constant BASE_FEE = 0.1 ether;
     uint96 constant GAS_PRICE_LINK = 1e9;
     int256 constant WEI_PER_UNIT_LINK = 4e15;
-    uint32 constant CALLBACK_GAS_LIMIT = 500000;
+    uint32 constant CALLBACK_GAS_LIMIT = 2_500_000;
     bytes32 constant GAS_LANE = 0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae;
 
     uint96 constant VRF_FUND_AMOUNT = 100 ether;
@@ -70,7 +72,9 @@ contract DeployAndSetupLocal is Script {
             MIN_BET,
             MAX_BET,
             HOUSE_EDGE,
-            SPIN_DELAY
+            SPIN_DELAY,
+            MAX_EXPOSURE_BPS,
+            VRF_TIMEOUT
         );
         console.log("Roulette:", address(roulette));
 
@@ -82,8 +86,9 @@ contract DeployAndSetupLocal is Script {
         usdc.approve(address(vault), LP_DEPOSIT);
         vault.deposit(LP_DEPOSIT, deployer);
 
-        usdc.approve(address(vault), PLAYER_CREDITS);
-        vault.depositCredits(PLAYER_CREDITS);
+        // Player credits now live in Roulette
+        usdc.approve(address(roulette), PLAYER_CREDITS);
+        roulette.depositCredits(PLAYER_CREDITS);
 
         vm.stopBroadcast();
 
