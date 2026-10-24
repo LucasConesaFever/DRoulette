@@ -6,11 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DWheel is a decentralized on-chain casino roulette protocol combining gaming with DeFi. Players deposit USDC to obtain credits for betting, while liquidity providers (LPs) earn yields through an ERC4626 vault system. The protocol uses Chainlink VRF for verifiable randomness.
 
-**Current Status**: Phase 2 Complete (vault + credits system). Phase 3 (frontend) is in progress.
+**Current Status**: Player funds moved from the vault into Roulette (see `spec.md`). Frontend in progress.
 
 ## Build & Test Commands
 
 ```bash
+# First checkout: fetch forge-std and openzeppelin-contracts
+git submodule update --init
+
 # Build contracts
 forge build
 
@@ -21,7 +24,7 @@ forge test
 forge test -vvv
 
 # Run specific test file
-forge test --match-path test/Roulette.t.sol
+forge test --match-path test/unit/Roulette.t.sol
 
 # Run specific test by name
 forge test --match-test testVault_LPYieldAccumulation
@@ -43,46 +46,50 @@ npm run build   # Production build
 ## Architecture
 
 ```
-Players                     Roulette.sol              RouletteVault.sol (ERC4626)
-   │                             │                            │
-   │  depositCredits(USDC)       │                            │
-   │────────────────────────────────────────────────────────>│
-   │  placeBet(credits)          │                            │
-   │────────────────────────────>│  recordBet()               │
-   │                             │───────────────────────────>│
-   │                             │  VRF Request ──> Chainlink │
-   │  payout (if win)            │  payout()                  │
-   │<────────────────────────────│<───────────────────────────│
-
-LPs deposit USDC → receive vault shares → earn yield from house edge profits
+Players ──depositCredits / withdrawCredits (USDC)──▶ Roulette.sol (holds player USDC, credits, bets)
+                                                      │  ▲
+                        house net win: transfer ──────┘  │ players net win: vault.fundPayout()
+                                                      ▼  │
+LPs ──ERC4626 deposit / redeem (USDC)──────────────▶ RouletteVault.sol (holds LP USDC only)
 ```
+
+Calls go Roulette → Vault. The vault only reads two Roulette views (`lpLocked()`, `reservedLiquidity()`).
+Full design: `spec.md`.
 
 ### Key Contracts
 
-- **Roulette.sol** - Game logic, VRF integration, bet placement/settlement, credits management
-- **RouletteVault.sol** - ERC4626 vault for USDC, handles LP deposits, player credits, payouts
-- **RouletteTypes.sol** - Library with bet type enums, structs, validation functions
+- **Roulette.sol** - Game logic, VRF integration, credits custody, bet placement, single-loop settlement
+- **RouletteVault.sol** - Plain ERC4626 over USDC for LPs; `totalAssets() = balanceOf(vault)`
+- **RouletteTypes.sol** - Bet types, packed structs, 37-bit number masks, validation
+- **IRouletteLiquidity.sol** - Views the vault reads from Roulette
 
 ### Design Patterns
 
-1. **Dual Accounting**: `lpCapital` (capped) vs `playerCredits` (unlimited) prevents LP capacity limits from blocking players
+1. **Split custody**: player USDC in Roulette, LP USDC in the vault. One net transfer per round at settlement.
 2. **Credits System**: Players bet with internal credits (1:1 with USDC), no token approvals per bet
-3. **Dynamic Max Bet**: `maxBet = availableLiquidity × maxBetMultiplier` protects vault from single large losses
-4. **Access Control**: Only Roulette can call `vault.payout()`, `vault.recordBet()`, etc.
+3. **Exposure limit**: a round's net worst case (`sum(amount × (multiplier + 1)) − stakes`) ≤ `maxExposureBps` of vault assets
+4. **LP protection**: LP actions blocked while a spin is pending or a deficit is open; withdrawals keep `reservedLiquidity()` in the vault
+5. **Bounded callback**: one-slot bets with a number mask, contiguous bet ids per round, `MAX_BETS_PER_ROUND = 40` sized by a cold-storage gas benchmark
+6. **Backstops**: deficit state if the vault can't cover a round (`coverDeficit()`), owner `refundRound()` after `vrfTimeout` if VRF never answers
+7. **Fixed VRF coordinator**: kept in an immutable and checked in the callback; the inherited `setCoordinator` has no effect
 
 ## Testing
 
-82 comprehensive tests with high coverage:
-- **RouletteVault.sol**: 98.57% line coverage
-- **Roulette.sol**: 93.66% line coverage
+- `test/unit/` - Roulette and RouletteVault unit + fuzz tests
+- `test/RouletteTypes.t.sol` - library tests, mask fuzz tests against a reference implementation
+- `test/invariant/` - stateful invariants (exact Roulette solvency, no deficit, vault balance = LP flows + house PnL, reserve coverage)
+- `test/gas/CallbackGas.t.sol` - callback gas benchmark; also run it with `forge test --isolate --match-path test/gas/CallbackGas.t.sol`
 
-Tests use `MockUSDC` (6 decimals) and `VRFCoordinatorV2Mock` for deterministic testing.
+Coverage needs `forge coverage --ir-minimum` (stack too deep without the optimizer).
+
+Tests use `MockUSDC` (6 decimals) and `VRFCoordinatorV2_5Mock` (`fulfillRandomWordsWithOverride` to pick the winning number).
 
 ## Key Parameters
 
-- **Roulette**: European (0-36), ~2.7% house edge, 13 bet types (STRAIGHT_UP 35:1 through RED/BLACK 1:1)
-- **Vault**: USDC asset, configurable LP capacity (default 10M), maxBetMultiplier (default 1%)
-- **States**: OPEN (accepting bets) ↔ CALCULATING (VRF pending)
+- **Roulette**: European (0-36), 13 bet types (STRAIGHT_UP 35:1 through RED/BLACK 1:1), `maxExposureBps` 1000 (10%), `vrfTimeout` 1h, callback gas limit 2.5M
+- **Vault**: USDC asset, configurable LP capacity (default 10M), shares have 12 decimals (virtual offset 6)
+- **States**: OPEN (accepting bets) → CALCULATING (VRF pending) → OPEN, or DEFICIT until covered
+- **Compiler**: solc 0.8.34 (contracts pinned, tests/scripts `^0.8.34`)
 
 ## Network Configuration
 
