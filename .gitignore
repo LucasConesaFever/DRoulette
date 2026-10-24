@@ -17,3 +17,6 @@ docs/
 crytic/
 crytic-export/
 .medusa-artifact-hash
+
+# Frontend dependencies (npm install)
+frontend/node_modules/
