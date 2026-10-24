@@ -32,9 +32,8 @@ contract FixRoulette is Script {
             2_500_000, // callback gas limit
             true,
             vault,
-            1e6,      // minBet: 1 USDC
-            100e6,    // maxBet: 100 USDC
-            270,      // houseEdge: 2.7%
+            1e6, // minBet: 1 USDC
+            100e6, // maxBet: 100 USDC
             60, // spin delay: 60s
             1000, // maxExposureBps: 10%
             3600 // vrfTimeout: 1 hour

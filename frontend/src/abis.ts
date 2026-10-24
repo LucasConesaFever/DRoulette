@@ -1187,11 +1187,6 @@ export const ROULETTE_ABI = [
         "internalType": "uint256"
       },
       {
-        "name": "_houseEdge",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
         "name": "_spinDelay",
         "type": "uint256",
         "internalType": "uint256"
@@ -1672,19 +1667,6 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "function",
-    "name": "houseEdge",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "houseNetPnl",
     "inputs": [],
     "outputs": [
@@ -1876,19 +1858,6 @@ export const ROULETTE_ABI = [
         "name": "_vrfCoordinator",
         "type": "address",
         "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "setHouseEdge",
-    "inputs": [
-      {
-        "name": "_houseEdge",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -2260,25 +2229,6 @@ export const ROULETTE_ABI = [
       },
       {
         "name": "deficit",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "HouseEdgeUpdated",
-    "inputs": [
-      {
-        "name": "oldHouseEdge",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "newHouseEdge",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"

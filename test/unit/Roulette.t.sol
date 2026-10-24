@@ -334,9 +334,7 @@ contract RouletteTest is BaseTest {
         assertEq(vault.totalAssets(), vaultBefore + 20e6);
     }
 
-    function testFuzz_Settle_NetTransferMatchesPayouts(uint256 word, uint256[3] memory amounts, uint8 number)
-        public
-    {
+    function testFuzz_Settle_NetTransferMatchesPayouts(uint256 word, uint256[3] memory amounts, uint8 number) public {
         number = uint8(bound(number, 0, 36));
         for (uint256 i; i < 3; ++i) {
             amounts[i] = bound(amounts[i], MIN_BET, MAX_BET);
@@ -798,7 +796,6 @@ contract RouletteTest is BaseTest {
             address(vault),
             MIN_BET,
             MAX_BET,
-            HOUSE_EDGE,
             SPIN_DELAY,
             MAX_EXPOSURE_BPS,
             0
@@ -885,7 +882,6 @@ contract RouletteTest is BaseTest {
         roulette.setMinBet(2e6);
         roulette.setMaxBet(50e6);
         roulette.setSpinDelay(10);
-        roulette.setHouseEdge(100);
         vm.stopPrank();
 
         assertEq(roulette.maxExposureBps(), 500);
@@ -893,6 +889,5 @@ contract RouletteTest is BaseTest {
         assertEq(roulette.minBet(), 2e6);
         assertEq(roulette.maxBet(), 50e6);
         assertEq(roulette.spinDelay(), 10);
-        assertEq(roulette.houseEdge(), 100);
     }
 }

@@ -18,10 +18,7 @@ contract RouletteTypesTest is Test {
     }
 
     function test_GetNumberColor_AllRed() public pure {
-        uint8[18] memory redNumbers = [
-            uint8(1), 3, 5, 7, 9, 12, 14, 16, 18,
-            19, 21, 23, 25, 27, 30, 32, 34, 36
-        ];
+        uint8[18] memory redNumbers = [uint8(1), 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
 
         for (uint256 i = 0; i < redNumbers.length; i++) {
             assertEq(
@@ -33,10 +30,7 @@ contract RouletteTypesTest is Test {
     }
 
     function test_GetNumberColor_AllBlack() public pure {
-        uint8[18] memory blackNumbers = [
-            uint8(2), 4, 6, 8, 10, 11, 13, 15, 17,
-            20, 22, 24, 26, 28, 29, 31, 33, 35
-        ];
+        uint8[18] memory blackNumbers = [uint8(2), 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35];
 
         for (uint256 i = 0; i < blackNumbers.length; i++) {
             assertEq(
@@ -51,12 +45,11 @@ contract RouletteTypesTest is Test {
         // Test all numbers 0-36
         for (uint8 i = 0; i <= 36; i++) {
             RouletteTypes.Color color = RouletteTypes.getNumberColor(i);
-            
+
             // Verify color is valid
             assertTrue(
-                color == RouletteTypes.Color.GREEN ||
-                color == RouletteTypes.Color.RED ||
-                color == RouletteTypes.Color.BLACK,
+                color == RouletteTypes.Color.GREEN || color == RouletteTypes.Color.RED
+                    || color == RouletteTypes.Color.BLACK,
                 string(abi.encodePacked("Invalid color for number ", vm.toString(i)))
             );
         }
@@ -108,7 +101,7 @@ contract RouletteTypesTest is Test {
 
     function test_ValidateBet_SimpleBets() public pure {
         uint8[] memory empty = new uint8[](0);
-        
+
         assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.RED, empty));
         assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.BLACK, empty));
         assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.EVEN, empty));
@@ -170,11 +163,11 @@ contract RouletteTypesTest is Test {
         assertTrue(_win(RouletteTypes.BetType.RED, numbers, 1));
         assertTrue(_win(RouletteTypes.BetType.RED, numbers, 3));
         assertTrue(_win(RouletteTypes.BetType.RED, numbers, 36));
-        
+
         // Test with black numbers
         assertFalse(_win(RouletteTypes.BetType.RED, numbers, 2));
         assertFalse(_win(RouletteTypes.BetType.RED, numbers, 4));
-        
+
         // Test with green (0)
         assertFalse(_win(RouletteTypes.BetType.RED, numbers, 0));
     }
@@ -281,15 +274,15 @@ contract RouletteTypesTest is Test {
         // Adjacent horizontal
         assertTrue(RouletteTypes.isValidSplit(1, 2));
         assertTrue(RouletteTypes.isValidSplit(35, 36));
-        
+
         // Adjacent vertical
         assertTrue(RouletteTypes.isValidSplit(1, 4));
         assertTrue(RouletteTypes.isValidSplit(34, 31));
-        
+
         // Not adjacent
         assertFalse(RouletteTypes.isValidSplit(1, 5));
         assertFalse(RouletteTypes.isValidSplit(1, 10));
-        
+
         // Invalid numbers
         assertFalse(RouletteTypes.isValidSplit(37, 1));
         assertFalse(RouletteTypes.isValidSplit(1, 38));
@@ -299,16 +292,14 @@ contract RouletteTypesTest is Test {
 
     function testFuzz_GetNumberColor(uint8 number) public pure {
         vm.assume(number <= 36);
-        
+
         RouletteTypes.Color color = RouletteTypes.getNumberColor(number);
-        
+
         // Check color is valid
         assertTrue(
-            color == RouletteTypes.Color.GREEN ||
-            color == RouletteTypes.Color.RED ||
-            color == RouletteTypes.Color.BLACK
+            color == RouletteTypes.Color.GREEN || color == RouletteTypes.Color.RED || color == RouletteTypes.Color.BLACK
         );
-        
+
         // Zero should always be green
         if (number == 0) {
             assertEq(uint8(color), uint8(RouletteTypes.Color.GREEN));
@@ -318,30 +309,22 @@ contract RouletteTypesTest is Test {
     function testFuzz_CheckWin_StraightUp(uint8 betNumber, uint8 winningNumber) public pure {
         vm.assume(betNumber <= 36);
         vm.assume(winningNumber <= 36);
-        
+
         uint8[] memory numbers = new uint8[](1);
         numbers[0] = betNumber;
-        
+
         bool shouldWin = (betNumber == winningNumber);
-        bool actualWin = _win(
-            RouletteTypes.BetType.STRAIGHT_UP,
-            numbers,
-            winningNumber
-        );
-        
+        bool actualWin = _win(RouletteTypes.BetType.STRAIGHT_UP, numbers, winningNumber);
+
         assertEq(shouldWin, actualWin);
     }
 
     function testFuzz_CheckWin_Even(uint8 winningNumber) public pure {
         vm.assume(winningNumber <= 36);
-        
+
         uint8[] memory numbers = new uint8[](0);
-        bool result = _win(
-            RouletteTypes.BetType.EVEN,
-            numbers,
-            winningNumber
-        );
-        
+        bool result = _win(RouletteTypes.BetType.EVEN, numbers, winningNumber);
+
         // Should win only if number is even and not zero
         bool expected = (winningNumber > 0 && winningNumber % 2 == 0);
         assertEq(result, expected);
@@ -349,14 +332,10 @@ contract RouletteTypesTest is Test {
 
     function testFuzz_CheckWin_Odd(uint8 winningNumber) public pure {
         vm.assume(winningNumber <= 36);
-        
+
         uint8[] memory numbers = new uint8[](0);
-        bool result = _win(
-            RouletteTypes.BetType.ODD,
-            numbers,
-            winningNumber
-        );
-        
+        bool result = _win(RouletteTypes.BetType.ODD, numbers, winningNumber);
+
         // Should win only if number is odd and not zero
         bool expected = (winningNumber > 0 && winningNumber % 2 == 1);
         assertEq(result, expected);
@@ -397,14 +376,17 @@ contract RouletteTypesTest is Test {
     }
 
     function _countBits(uint40 mask) internal pure returns (uint256 count) {
-        for (; mask != 0; mask &= mask - 1) ++count;
+        for (; mask != 0; mask &= mask - 1) {
+            ++count;
+        }
     }
 
     /// @dev Exhaustive over all outside bets and all 37 pockets (the domain is small enough to enumerate)
     function test_Mask_OutsideBetsMatchReference_AllPockets() public pure {
         for (uint8 t = 5; t <= 12; ++t) {
             RouletteTypes.BetType betType = RouletteTypes.BetType(t);
-            uint8 selectors = (betType == RouletteTypes.BetType.DOZEN || betType == RouletteTypes.BetType.COLUMN) ? 3 : 1;
+            uint8 selectors =
+                (betType == RouletteTypes.BetType.DOZEN || betType == RouletteTypes.BetType.COLUMN) ? 3 : 1;
             for (uint8 sel = 1; sel <= selectors; ++sel) {
                 uint8[] memory numbers;
                 if (selectors == 3) {

@@ -59,8 +59,8 @@ contract RouletteInvariantTest is StdInvariant, BaseTest {
         (, uint256 paidOut,) = roulette.getHouseStats();
         assertEq(
             roulette.totalCredits(),
-            handler.ghostCreditsDeposited() + handler.ghostStakesRefunded() + paidOut
-                - handler.ghostCreditsWithdrawn() - handler.ghostStakesPlaced()
+            handler.ghostCreditsDeposited() + handler.ghostStakesRefunded() + paidOut - handler.ghostCreditsWithdrawn()
+                - handler.ghostStakesPlaced()
         );
     }
 

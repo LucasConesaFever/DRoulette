@@ -16,7 +16,6 @@ contract DeployRoulette is Script {
     // Default configuration values
     uint256 constant MIN_BET = 1e6; // 1 USDC (6 decimals)
     uint256 constant MAX_BET = 100e6; // 100 USDC
-    uint256 constant HOUSE_EDGE = 270; // 2.7%
     uint256 constant SPIN_DELAY = 60; // 60 seconds between spins
     uint256 constant MAX_VAULT_CAPACITY = 10_000_000e6; // 10M USDC cap
     uint256 constant MAX_EXPOSURE_BPS = 1000; // 10% of vault assets per round
@@ -29,8 +28,7 @@ contract DeployRoulette is Script {
             address vrfCoordinator,
             bytes32 gasLane,
             uint256 subscriptionId,
-            uint32 callbackGasLimit,
-            , // link
+            uint32 callbackGasLimit,, // link
             address usdc,
             bool nativePayment
         ) = helperConfig.activeNetworkConfig();
@@ -58,12 +56,7 @@ contract DeployRoulette is Script {
 
         // 2. Deploy RouletteVault (ERC4626)
         console.log("\n2. Deploying RouletteVault (ERC4626)...");
-        RouletteVault vault = new RouletteVault(
-            usdc,
-            "DWheel Vault Shares",
-            "DWHEEL",
-            MAX_VAULT_CAPACITY
-        );
+        RouletteVault vault = new RouletteVault(usdc, "DWheel Vault Shares", "DWHEEL", MAX_VAULT_CAPACITY);
         console.log("RouletteVault deployed at:", address(vault));
         console.log("Max capacity:", MAX_VAULT_CAPACITY / 1e6, "USDC");
 
@@ -78,7 +71,6 @@ contract DeployRoulette is Script {
             address(vault),
             MIN_BET,
             MAX_BET,
-            HOUSE_EDGE,
             SPIN_DELAY,
             MAX_EXPOSURE_BPS,
             VRF_TIMEOUT
@@ -86,7 +78,6 @@ contract DeployRoulette is Script {
         console.log("Roulette deployed at:", address(roulette));
         console.log("Min bet:", MIN_BET / 1e6, "USDC");
         console.log("Max bet:", MAX_BET / 1e6, "USDC");
-        console.log("House edge:", HOUSE_EDGE, "basis points");
         console.log("Spin delay:", SPIN_DELAY, "seconds");
         console.log("Max exposure:", MAX_EXPOSURE_BPS, "bps of vault assets");
         console.log("VRF timeout:", VRF_TIMEOUT, "seconds");
@@ -111,11 +102,17 @@ contract DeployRoulette is Script {
         console.log("\nNEXT STEPS:");
         if (subscriptionId == 0) {
             console.log("1. Create VRF V2.5 subscription:");
-            console.log("   forge script script/Interactions.s.sol:CreateSubscription --rpc-url $RPC_URL --account <name> --broadcast");
+            console.log(
+                "   forge script script/Interactions.s.sol:CreateSubscription --rpc-url $RPC_URL --account <name> --broadcast"
+            );
             console.log("2. Fund the subscription at https://vrf.chain.link or with script:");
-            console.log("   forge script script/Interactions.s.sol:FundSubscription --rpc-url $RPC_URL --account <name> --broadcast");
+            console.log(
+                "   forge script script/Interactions.s.sol:FundSubscription --rpc-url $RPC_URL --account <name> --broadcast"
+            );
             console.log("3. Add Roulette as consumer:");
-            console.log("   forge script script/Interactions.s.sol:AddConsumer --rpc-url $RPC_URL --account <name> --broadcast");
+            console.log(
+                "   forge script script/Interactions.s.sol:AddConsumer --rpc-url $RPC_URL --account <name> --broadcast"
+            );
         }
         console.log("\nPhase 2 System:");
         console.log("- Players: usdc.approve(roulette) + roulette.depositCredits(USDC) -> get credits (1:1)");

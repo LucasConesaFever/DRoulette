@@ -56,7 +56,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     RouletteTypes.RouletteState public state;
     uint256 public minBet; // D6{USDC}
     uint256 public maxBet; // D6{USDC}
-    uint256 public houseEdge; // BPS{1} informational, unused in payout math
     uint256 public currentRoundId; // {id}
     uint256 public betIdCounter; // {id}
     uint256 public spinDelay; // {s} duration
@@ -109,7 +108,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     event RoundRefunded(uint256 indexed roundId);
     event MinBetUpdated(uint256 oldMinBet, uint256 newMinBet); // D6{USDC}
     event MaxBetUpdated(uint256 oldMaxBet, uint256 newMaxBet); // D6{USDC}
-    event HouseEdgeUpdated(uint256 oldHouseEdge, uint256 newHouseEdge); // BPS{1}
     event SpinDelayUpdated(uint256 oldDelay, uint256 newDelay); // {s}
     event MaxExposureBpsUpdated(uint256 oldBps, uint256 newBps); // BPS{1}
     event VrfTimeoutUpdated(uint256 oldTimeout, uint256 newTimeout); // {s}
@@ -151,7 +149,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
      * @param _vault Address of the RouletteVault
      * @param _minBet D6{USDC} Minimum bet amount
      * @param _maxBet D6{USDC} Maximum bet amount
-     * @param _houseEdge BPS{1} House edge in basis points (270 = 2.7%)
      * @param _spinDelay {s} Minimum delay between spins in seconds
      * @param _maxExposureBps BPS{1} Max net worst-case payout of a round, in bps of vault assets
      * @param _vrfTimeout {s} Time after a spin request before the owner can refund the round
@@ -165,7 +162,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         address _vault,
         uint256 _minBet,
         uint256 _maxBet,
-        uint256 _houseEdge,
         uint256 _spinDelay,
         uint256 _maxExposureBps,
         uint256 _vrfTimeout
@@ -182,7 +178,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         usdc = IERC20(RouletteVault(_vault).asset());
         minBet = _minBet;
         maxBet = _maxBet;
-        houseEdge = _houseEdge;
         spinDelay = _spinDelay;
         maxExposureBps = _maxExposureBps;
         vrfTimeout = _vrfTimeout;
@@ -371,12 +366,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         maxBet = _maxBet;
     }
 
-    /// @notice Update house edge (informational, in basis points)
-    function setHouseEdge(uint256 _houseEdge) external onlyOwner {
-        emit HouseEdgeUpdated(houseEdge, _houseEdge);
-        houseEdge = _houseEdge;
-    }
-
     /// @notice Update spin delay
     function setSpinDelay(uint256 _spinDelay) external onlyOwner {
         emit SpinDelayUpdated(spinDelay, _spinDelay);
@@ -478,7 +467,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         RouletteTypes.Bet memory bet = s_bets[betId];
         won = RouletteTypes.checkWin(bet.numbersMask, round.winningNumber);
         // D6{USDC} = D6{USDC} * D0{1}(mult + 1)
-        if (won) payout =uint256(bet.amount) * (RouletteTypes.getPayoutMultiplier(bet.betType) + 1);
+        if (won) payout = uint256(bet.amount) * (RouletteTypes.getPayoutMultiplier(bet.betType) + 1);
     }
 
     /// @notice Get player statistics. totalLost excludes stakes of the round in progress.
@@ -549,9 +538,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
      * @dev Adds a bet to the round: bet id range, bet count cap and exposure limit
      *      (the round's net worst case must stay within maxExposureBps of vault assets).
      */
-    function _addBetToRound(uint256 roundId, uint256 betId, RouletteTypes.BetType betType, uint256 amount)
-        internal
-    {
+    function _addBetToRound(uint256 roundId, uint256 betId, RouletteTypes.BetType betType, uint256 amount) internal {
         RouletteTypes.Round storage round = s_rounds[roundId];
 
         if (round.firstBetId == 0) {
@@ -559,7 +546,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
             // forge-lint: disable-next-line(unsafe-typecast) timestamps fit in uint64
             round.timestamp = uint64(block.timestamp); // {s}
             round.winningNumber = type(uint8).max;
-        } else if (betId - round.firstBetId >= MAX_BETS_PER_ROUND) { // {count} = {id} - {id}, vs {count}
+        } else if (betId - round.firstBetId >= MAX_BETS_PER_ROUND) {
+            // {count} = {id} - {id}, vs {count}
             revert Roulette__RoundFull();
         }
         // forge-lint: disable-next-line(unsafe-typecast) bet ids can't reach 2^64

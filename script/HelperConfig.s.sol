@@ -59,7 +59,8 @@ contract HelperConfig is Script {
 
         // Deploy mocks
         vm.startBroadcast();
-        VRFCoordinatorV2_5Mock vrfCoordinatorMock = new VRFCoordinatorV2_5Mock(BASE_FEE, GAS_PRICE_LINK, WEI_PER_UNIT_LINK);
+        VRFCoordinatorV2_5Mock vrfCoordinatorMock =
+            new VRFCoordinatorV2_5Mock(BASE_FEE, GAS_PRICE_LINK, WEI_PER_UNIT_LINK);
         MockUSDC mockUsdc = new MockUSDC(INITIAL_MOCK_USDC_SUPPLY);
         vm.stopBroadcast();
 

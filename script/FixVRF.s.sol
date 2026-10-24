@@ -31,11 +31,10 @@ contract FixVRF is Script {
             subId,
             gasLane,
             2_500_000, // callback gas limit
-            true,       // native payment
+            true, // native payment
             vault,
-            1e6,        // min bet (1 USDC)
-            100e6,      // max bet (100 USDC)
-            270,        // house edge (2.7%)
+            1e6, // min bet (1 USDC)
+            100e6, // max bet (100 USDC)
             60, // spin delay: 60s
             1000, // maxExposureBps: 10%
             3600 // vrfTimeout: 1 hour

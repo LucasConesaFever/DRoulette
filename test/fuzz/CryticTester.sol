@@ -19,7 +19,6 @@ import {Handler} from "test/invariant/Handler.sol";
 contract CryticTester {
     uint256 internal constant MIN_BET = 1e6;
     uint256 internal constant MAX_BET = 100e6;
-    uint256 internal constant HOUSE_EDGE = 270;
     uint256 internal constant SPIN_DELAY = 60;
     uint256 internal constant MAX_EXPOSURE_BPS = 1_000;
     uint256 internal constant VRF_TIMEOUT = 1 hours;
@@ -48,7 +47,6 @@ contract CryticTester {
             address(vault),
             MIN_BET,
             MAX_BET,
-            HOUSE_EDGE,
             SPIN_DELAY,
             MAX_EXPOSURE_BPS,
             VRF_TIMEOUT

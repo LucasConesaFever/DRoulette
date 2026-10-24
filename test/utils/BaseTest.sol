@@ -28,7 +28,6 @@ abstract contract BaseTest is Test {
 
     uint256 internal constant MIN_BET = 1e6; // 1 USDC
     uint256 internal constant MAX_BET = 100e6; // 100 USDC
-    uint256 internal constant HOUSE_EDGE = 270;
     uint256 internal constant SPIN_DELAY = 60;
     uint256 internal constant MAX_EXPOSURE_BPS = 1_000; // 10%
     uint256 internal constant VRF_TIMEOUT = 1 hours;
@@ -64,7 +63,6 @@ abstract contract BaseTest is Test {
             address(vault),
             MIN_BET,
             MAX_BET,
-            HOUSE_EDGE,
             SPIN_DELAY,
             MAX_EXPOSURE_BPS,
             VRF_TIMEOUT

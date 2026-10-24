@@ -10,7 +10,6 @@ import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/src/v0.8/vrf/mocks/VR
 contract DeployWithVRF is Script {
     uint256 constant MIN_BET = 1e6;
     uint256 constant MAX_BET = 100e6;
-    uint256 constant HOUSE_EDGE = 270;
     uint256 constant SPIN_DELAY = 60;
     uint256 constant MAX_VAULT_CAPACITY = 10_000_000e6;
     uint256 constant MAX_EXPOSURE_BPS = 1000; // 10% of vault assets per round
@@ -39,12 +38,7 @@ contract DeployWithVRF is Script {
         console.log("USDC:", address(usdc));
 
         // 4. Deploy Vault
-        RouletteVault vault = new RouletteVault(
-            address(usdc),
-            "DWheel Vault Shares",
-            "DWHEEL",
-            MAX_VAULT_CAPACITY
-        );
+        RouletteVault vault = new RouletteVault(address(usdc), "DWheel Vault Shares", "DWHEEL", MAX_VAULT_CAPACITY);
         console.log("Vault:", address(vault));
 
         // 5. Deploy Roulette WITH correct subscription ID
@@ -57,7 +51,6 @@ contract DeployWithVRF is Script {
             address(vault),
             MIN_BET,
             MAX_BET,
-            HOUSE_EDGE,
             SPIN_DELAY,
             MAX_EXPOSURE_BPS,
             VRF_TIMEOUT

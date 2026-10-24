@@ -8,7 +8,7 @@
       "category": "core-logic",
       "patterns_found": {
         "high_signal": ["10_000 (BPS)"],
-        "medium_signal": ["maxExposureBps", "houseEdge (bps)", "getPayoutMultiplier", "payout = amount * (mult + 1)", "int256 netToPlayers", "MIN_VRF_TIMEOUT = 1 hours", "vrfTimeout", "spinDelay", "block.timestamp casts", "uint128/uint120 narrowing", "% WHEEL_SIZE"]
+        "medium_signal": ["maxExposureBps", "getPayoutMultiplier", "payout = amount * (mult + 1)", "int256 netToPlayers", "MIN_VRF_TIMEOUT = 1 hours", "vrfTimeout", "spinDelay", "block.timestamp casts", "uint128/uint120 narrowing", "% WHEEL_SIZE"]
       },
       "phase2": "ANNOTATED",
       "phase3": "PROPAGATED",

@@ -32,7 +32,6 @@ contract FixConsumer is Script {
             vault,
             1e6,
             100e6,
-            270,
             60, // spin delay: 60s
             1000, // maxExposureBps: 10%
             3600 // vrfTimeout: 1 hour

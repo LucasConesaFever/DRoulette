@@ -16,9 +16,9 @@ contract DeployAll is Script {
 
         // 1. Deploy VRF Coordinator Mock
         VRFCoordinatorV2_5Mock vrfCoordinator = new VRFCoordinatorV2_5Mock(
-            0.1 ether,  // baseFee
-            1e9,        // gasPriceLink
-            4e15        // weiPerUnitLink
+            0.1 ether, // baseFee
+            1e9, // gasPriceLink
+            4e15 // weiPerUnitLink
         );
         console.log("VRF:", address(vrfCoordinator));
 
@@ -38,12 +38,7 @@ contract DeployAll is Script {
         console.log("USDC:", address(usdc));
 
         // 4. Deploy Vault
-        RouletteVault vault = new RouletteVault(
-            address(usdc),
-            "DWheel Vault Shares",
-            "DWHEEL",
-            10_000_000e6
-        );
+        RouletteVault vault = new RouletteVault(address(usdc), "DWheel Vault Shares", "DWHEEL", 10_000_000e6);
         console.log("Vault:", address(vault));
 
         // 5. Deploy Roulette
@@ -56,7 +51,6 @@ contract DeployAll is Script {
             address(vault),
             1e6,
             100e6,
-            270,
             60,
             1000, // maxExposureBps: 10%
             3600 // vrfTimeout: 1 hour
