@@ -6,7 +6,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {VRFConsumerBaseV2Plus} from "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
 import {IVRFCoordinatorV2Plus} from "@chainlink/contracts/src/v0.8/vrf/dev/interfaces/IVRFCoordinatorV2Plus.sol";
 import {RouletteVault} from "src/RouletteVault.sol";
@@ -20,10 +21,12 @@ import {RouletteTypes} from "src/libraries/RouletteTypes.sol";
  *      The vault only holds LP liquidity. At settlement, one net USDC transfer per round moves
  *      the house's winnings to the vault, or pulls the players' winnings from it.
  *      Implements European roulette (0-36) with Chainlink VRF V2.5.
- *      Owner functionality (two-step transfer) comes from VRFConsumerBaseV2Plus.
+ *      Does not inherit VRFConsumerBaseV2Plus: its owner-callable setCoordinator would let the owner
+ *      make the real coordinator's callback revert, then refund a round whose result they disliked.
+ *      The coordinator is fixed at deploy time and rawFulfillRandomWords is implemented here.
  * @custom:security-contact https://github.com/LucasConesaFever/DRoulette/issues
  */
-contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, IRouletteLiquidity {
+contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRouletteLiquidity {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
 
@@ -33,8 +36,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
     // Chainlink VRF V2.5
     uint16 private constant REQUEST_CONFIRMATIONS = 3; // {block}
     uint32 private constant NUM_WORDS = 1; // {count}
-    /// @dev Fixed coordinator. The inherited, owner-callable setCoordinator only changes s_vrfCoordinator,
-    ///      which this contract never uses, so the owner can't swap in a coordinator that picks numbers.
+    /// @dev Fixed coordinator: the only address whose callback can settle a round
     IVRFCoordinatorV2Plus private immutable i_vrfCoordinator;
     uint256 private immutable i_subscriptionId;
     bytes32 private immutable i_gasLane;
@@ -165,7 +167,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         uint256 _spinDelay,
         uint256 _maxExposureBps,
         uint256 _vrfTimeout
-    ) VRFConsumerBaseV2Plus(_vrfCoordinator) {
+    ) Ownable(msg.sender) {
         if (_maxExposureBps > BPS) revert Roulette__InvalidBps();
         if (_vrfTimeout < MIN_VRF_TIMEOUT) revert Roulette__VrfTimeoutTooShort();
         i_vrfCoordinator = IVRFCoordinatorV2Plus(_vrfCoordinator);
@@ -581,13 +583,15 @@ contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, 
         stats.totalWagered += amount; // D6{USDC}
     }
 
+    /*//////////////////////////////////////////////////////////////
+                              VRF CALLBACK
+    //////////////////////////////////////////////////////////////*/
     /**
      * @notice Callback called by Chainlink VRF with the random number
      * @dev Must not revert for funding reasons: Chainlink does not retry. Settles every bet of the
      *      round in one loop, then moves the round's net amount between Roulette and the vault.
      */
-    function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {
-        // rawFulfillRandomWords only checks s_vrfCoordinator, which the owner can change
+    function rawFulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) external {
         if (msg.sender != address(i_vrfCoordinator)) revert Roulette__OnlyVrfCoordinator();
         uint256 roundId = s_requestIdToRoundId[requestId];
         if (roundId == 0) revert Roulette__InvalidRequestId();

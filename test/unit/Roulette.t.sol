@@ -2,6 +2,7 @@
 pragma solidity ^0.8.34;
 
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {Roulette} from "src/Roulette.sol";
 import {RouletteTypes} from "src/libraries/RouletteTypes.sol";
@@ -250,7 +251,7 @@ contract RouletteTest is BaseTest {
         _fundCredits(player1, 10e6);
         _betRed(player1, 1e6);
         vm.prank(player1);
-        vm.expectRevert("Only callable by owner");
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         roulette.spin();
     }
 
@@ -569,23 +570,38 @@ contract RouletteTest is BaseTest {
         roulette.rawFulfillRandomWords(12345, words);
     }
 
-    /// @dev The owner can call the inherited setCoordinator, but that must not let them pick numbers
-    function test_Fulfill_OwnerSetCoordinatorCannotPickNumbers() public {
+    /// @dev Regression: with the inherited setCoordinator, the owner could front-run the VRF answer so the
+    ///      real coordinator's callback reverted, then refund a winning round after the timeout
+    function test_Fulfill_OwnerCannotVetoResult() public {
+        _fundCredits(player1, 100e6);
+        _betStraight(player1, 7, 100e6);
+        uint256 requestId = _spin();
+
+        vm.prank(owner);
+        (bool ok,) = address(roulette).call(abi.encodeWithSignature("setCoordinator(address)", owner));
+        assertFalse(ok, "setCoordinator exists");
+
+        _fulfill(requestId, 7);
+        assertEq(roulette.credits(player1), 3_600e6, "winnings paid");
+        assertTrue(roulette.getRound(1).completed);
+
+        vm.warp(block.timestamp + VRF_TIMEOUT);
+        vm.prank(owner);
+        vm.expectRevert(Roulette.Roulette__NotCalculating.selector);
+        roulette.refundRound();
+    }
+
+    function testFuzz_Fulfill_RevertWhen_NotCoordinator(address caller) public {
+        vm.assume(caller != address(vrfCoordinator));
         _fundCredits(player1, 10e6);
         _betStraight(player1, 17, 10e6);
         uint256 requestId = _spin();
 
-        vm.prank(owner);
-        roulette.setCoordinator(owner);
-
         uint256[] memory words = new uint256[](1);
         words[0] = 17;
-        vm.prank(owner);
+        vm.prank(caller);
         vm.expectRevert(Roulette.Roulette__OnlyVrfCoordinator.selector);
         roulette.rawFulfillRandomWords(requestId, words);
-
-        (address coordinator,,,,) = roulette.getVrfConfig();
-        assertEq(coordinator, address(vrfCoordinator));
     }
 
     function test_Fulfill_RevertWhen_AlreadyFulfilled() public {
@@ -829,7 +845,7 @@ contract RouletteTest is BaseTest {
 
     function test_RefundRound_RevertWhen_NotOwner() public {
         vm.prank(player1);
-        vm.expectRevert("Only callable by owner");
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         roulette.refundRound();
     }
 
@@ -864,13 +880,13 @@ contract RouletteTest is BaseTest {
 
     function test_Setters_OnlyOwner() public {
         vm.startPrank(player1);
-        vm.expectRevert("Only callable by owner");
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         roulette.setMaxExposureBps(1);
-        vm.expectRevert("Only callable by owner");
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         roulette.setVrfTimeout(1);
-        vm.expectRevert("Only callable by owner");
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         roulette.setMinBet(1);
-        vm.expectRevert("Only callable by owner");
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         roulette.setMaxBet(1);
         vm.stopPrank();
     }

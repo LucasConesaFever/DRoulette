@@ -71,7 +71,7 @@ Full design: `spec.md`.
 4. **LP protection**: LP actions blocked while a spin is pending or a deficit is open; withdrawals keep `reservedLiquidity()` in the vault
 5. **Bounded callback**: one-slot bets with a number mask, contiguous bet ids per round, `MAX_BETS_PER_ROUND = 40` sized by a cold-storage gas benchmark
 6. **Backstops**: deficit state if the vault can't cover a round (`coverDeficit()`), owner `refundRound()` after `vrfTimeout` if VRF never answers
-7. **Fixed VRF coordinator**: kept in an immutable and checked in the callback; the inherited `setCoordinator` has no effect
+7. **Fixed VRF coordinator**: immutable, checked in our own `rawFulfillRandomWords`; no `VRFConsumerBaseV2Plus` (its owner-callable `setCoordinator` let the owner veto results), ownership from `Ownable2Step`
 
 ## Testing
 
