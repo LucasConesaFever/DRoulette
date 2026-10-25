@@ -125,6 +125,28 @@ type TableProps = {
   onOutside: (type: BetType, selector?: number) => void;
 };
 
+// Whether inside-bet numbers form their shape on the table (rows 1-2-3, 4-5-6, ...); mirrors
+// RouletteTypes so the slip can explain a bad pick before it is sent. The contract still decides.
+function formsShape(type: BetType, numbers: number[]): boolean {
+  const n = [...numbers].sort((a, b) => a - b);
+  const [a, b] = n;
+  switch (type) {
+    case BetType.STRAIGHT_UP:
+      return n.length === 1;
+    case BetType.SPLIT:
+      return n.length === 2 && (a === 0 ? b <= 3 : (b - a === 1 && a % 3 !== 0) || b - a === 3);
+    case BetType.STREET:
+      return n.length === 3 && a % 3 === 1 && n[1] === a + 1 && n[2] === a + 2;
+    case BetType.CORNER:
+      if (n.join() === '0,1,2,3') return true;
+      return n.length === 4 && a >= 1 && a % 3 !== 0 && n.join() === [a, a + 1, a + 3, a + 4].join();
+    case BetType.LINE:
+      return n.length === 6 && a % 3 === 1 && n.every((x, i) => x === a + i);
+    default:
+      return true;
+  }
+}
+
 // Grid position on the horizontal layout; CSS transposes it for the vertical layout on phones
 const place = (row: number, col: number, rowSpan = 1, colSpan = 1) =>
   ({ '--r': row, '--c': col, '--rs': rowSpan, '--cs': colSpan }) as React.CSSProperties;
@@ -651,7 +673,9 @@ function App() {
   };
 
   // Count check only: the contract checks the table shape (neighbours, rows, squares)
-  const betNumbersReady = betType > BetType.COLUMN || (numbersValid && selectedNumbers.length === (insideSize ?? 1));
+  const insideComplete = insideSize !== undefined && numbersValid && selectedNumbers.length === insideSize;
+  const shapeOk = !insideComplete || formsShape(betType, selectedNumbers);
+  const betNumbersReady = betType > BetType.COLUMN || (numbersValid && selectedNumbers.length === (insideSize ?? 1) && shapeOk);
 
   const handlePlaceBet = () => {
     if (!betAmount || !betNumbersReady) return;
@@ -953,6 +977,16 @@ function App() {
                     </span>
                   )}
                   {!numbersValid && <span className="slip-hint">Numbers must be whole, 0 to 36, without repeats</span>}
+                  {!shapeOk && (
+                    <span className="slip-hint">
+                      {{
+                        [BetType.SPLIT]: 'A split covers two numbers side by side on the table, or 0 with 1, 2 or 3',
+                        [BetType.STREET]: 'A street is one row of three, like 4, 5, 6',
+                        [BetType.CORNER]: 'A corner is four numbers meeting at a corner, like 1, 2, 4, 5, or 0, 1, 2, 3',
+                        [BetType.LINE]: 'A line is two rows next to each other, like 1 to 6',
+                      }[betType as number] ?? ''}
+                    </span>
+                  )}
                 </div>
                 <div className="slip-stake">
                   <div className="chips" aria-label="Add chips">
