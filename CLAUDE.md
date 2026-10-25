@@ -69,7 +69,7 @@ Full design: `spec.md`.
 2. **Credits System**: Players bet with internal credits (1:1 with USDC), no token approvals per bet
 3. **Exposure limit**: a round's net worst case (`sum(amount × (multiplier + 1)) − stakes`) ≤ `maxExposureBps` of vault assets
 4. **LP protection**: LP actions blocked while a spin is pending or a deficit is open; withdrawals keep `reservedLiquidity()` in the vault
-5. **Bounded callback**: one-slot bets with a number mask, contiguous bet ids per round, `MAX_BETS_PER_ROUND = 40` sized by a cold-storage gas benchmark
+5. **Bounded callback**: one-slot bets with a number mask, contiguous bet ids per round, `MAX_BETS_PER_ROUND = 70` sized by a cold-storage gas benchmark; hot fields packed (one account slot per player for credits + win stats, one slot for round counters/timestamps, one for house totals, one reused `pendingRequestId`)
 6. **Backstops**: deficit state if the vault can't cover a round (`coverDeficit()`), owner `refundRound()` after `vrfTimeout` if VRF never answers
 7. **Fixed VRF coordinator**: immutable, checked in our own `rawFulfillRandomWords`; no `VRFConsumerBaseV2Plus` (its owner-callable `setCoordinator` let the owner veto results), ownership from `Ownable2Step`
 

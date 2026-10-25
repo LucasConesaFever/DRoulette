@@ -140,7 +140,7 @@ Then the net settlement with the vault:
 - `net > 0` and the vault can't cover it → deficit backstop (§5.7)
 - `net == 0` → no transfer
 
-Then: `round.completed = true`, house stats updated (§5.9), `currentRoundId++`, state OPEN, `SpinCompleted` emitted.
+Then: `round.completed = true`, house stats updated (§5.9), `currentRoundId++`, state OPEN, `RoundSettled` emitted (winning number, stakes, gross payout, net to players).
 
 Winners are credited **before** the vault check. The exposure limit (§5.5) and LP reservation (§5.6) make a shortfall practically impossible, so the callback doesn't need a separate pass to compute the total first.
 
@@ -192,7 +192,7 @@ While in `DEFICIT`:
 Separate failure from §5.7: Chainlink never calls back, so there is no winning number. `refundRound()` (only when `state == CALCULATING` and `block.timestamp - spinRequestedAt >= vrfTimeout`; owner-only while a VRF request is pending, permissionless after an emergency stop):
 
 - Re-credits each bet's `amount` and rolls back `playerStats.totalWagered` / `totalBets` for those bets.
-- Deletes the `requestId → roundId` mapping, so a late VRF answer reverts with `InvalidRequestId` instead of settling a refunded round.
+- Clears `pendingRequestId`, so a late VRF answer reverts with `InvalidRequestId` instead of settling a refunded round (the callback only accepts the pending request while CALCULATING).
 - Marks the round completed (no winning number), increments `currentRoundId`, sets state to OPEN. Emits `RoundRefunded(roundId)`.
 - `vrfTimeout` is owner-configurable, default 1 hour, with a hard minimum `MIN_VRF_TIMEOUT = 1 hours` (constructor and setter), so the owner can't refund a round right after seeing its result in the mempool.
 - `emergencyStopBetting` starts the refund clock (`spinRequestedAt = block.timestamp`), so a stop followed by `refundRound` also waits the full timeout. It only works from OPEN, so it can't restart the clock of a round that is already CALCULATING.
@@ -204,8 +204,8 @@ Separate failure from §5.7: Chainlink never calls back, so there is no winning 
 
 Kept on-chain, but arranged so losing bets need no write in the callback:
 
-- **Per player** (`playerStats`): `totalBets`, `totalWagered`, `lastPlayedTimestamp` are written in `placeBet` (as today). `totalWon` (winnings, without stake) is written in the callback for winners only. `totalLost` is no longer stored; `getPlayerStats` derives it as `totalWagered − stakes of won bets − stakes in the open round`. To make that exact, the callback also adds the stake to a `totalWonStakes` field for winners (same slot pattern, no extra cost for losers).
-- **Global, in Roulette**: `totalWagered`, `totalPaidOut`, `houseNetPnl` (`int256`), updated once per round in the callback. View `getHouseStats()`.
+- **Per player** (`playerStats`): `totalBets`, `totalWagered`, `lastPlayedTimestamp` are written in `placeBet` (as today). `totalWon` (winnings, without stake) is written in the callback for winners only. `totalLost` is no longer stored; `getPlayerStats` derives it as `totalWagered − stakes of won bets − stakes in the open round`. To make that exact, the callback also adds the stake to a `totalWonStakes` field for winners. Both live in the player's `PlayerAccount` slot next to their credits (`uint96` credits, `uint80` each stat), so paying a winner is one storage write and losers cost nothing.
+- **Global, in Roulette**: `totalWagered` and `totalPaidOut` (`uint128`, one slot), updated once per round in the callback. `houseNetPnl()` is derived as `totalWagered − totalPaidOut`. View `getHouseStats()`.
 - LP-side numbers (TVL, share price) come from standard ERC4626 views on the vault.
 
 ### 5.10 Callback gas budget
@@ -214,16 +214,18 @@ Callback cost, measured by `test/gas/CallbackGas.t.sol`:
 
 | | Before | After |
 |---|---|---|
-| Fixed per round | ~101k | ~127k when the house wins, ~182k when the vault pays (includes the net transfer with the vault) |
+| Fixed per round | ~101k | ~80k when the house wins, ~113k when the vault pays (includes the net transfer with the vault) |
 | Losing bet | ~46.5k | ~2.7k |
-| Winning bet, worst case | ~75k | ~51k (fresh player: credits and win stats go zero → non-zero, ~22k each) |
-| Full round, all winning | ~3.5M (45 bets) | ~2.22M (40 bets) |
-| Full round, all losing | ~2.2M (45 bets) | ~0.24M (40 bets) |
+| Winning bet, worst case | ~75k | ~29.5k (fresh player: the account slot goes zero → non-zero, ~22k) |
+| Full round, all winning | ~3.5M (45 bets) | ~2.17M (70 bets) |
+| Full round, all losing | ~2.2M (45 bets) | ~0.27M (70 bets) |
 
-A winner who already has credits and earlier wins costs ~10–15k; the cap has to use the worst case.
+A winner who already has credits costs ~10k; the cap has to use the worst case.
+
+What keeps it low: bets are one slot; credits and win stats share one slot per player; the house totals share one slot; round counters and timestamps share one slot; the pending VRF request reuses one slot; one `RoundSettled` event per round (no per-round `StateChanged`). `test/gas/HouseGas.t.sol` logs what the house pays per round (spin + callback as VRF bills it) in steady state.
 
 - Add a constant `MAX_BETS_PER_ROUND` (no setter). `placeBet` reverts with `RoundFull()` past it.
-- Value: **40**, from the benchmark with cold storage (`forge test --isolate`). 40 all-winning worst-case bets use ~2.22M gas, leaving ~11% of the 2.5M limit; the test asserts at least 10% headroom.
+- Value: **70**, from the benchmark with cold storage (`forge test --isolate`). 70 all-winning worst-case bets use ~2.17M gas, leaving ~13% of the 2.5M limit; the test asserts at least 10% headroom (75 bets would use ~2.32M).
 - `callbackGasLimit` stays `immutable`. Deploy scripts raise it from `500_000` to `2_500_000` (Chainlink's usual maximum).
 - A test asserts that a full round of `MAX_BETS_PER_ROUND` winning bets fits in `callbackGasLimit`.
 
@@ -231,7 +233,7 @@ Why a cap is needed: without one, a busy round could run out of callback gas and
 
 ## 6. Events
 
-- Roulette: `CreditsDeposited(player, amount)`, `CreditsWithdrawn(player, amount)`, `BetWon(betId, player, payout)` (replaces `BetSettled`; losers emit nothing), `RoundSettled(roundId, totalBets, totalPayout, int256 netToPlayers)`, `DeficitRecorded(roundId, deficit)`, `DeficitCovered(amount, remaining)`, `RoundRefunded(roundId)`, `MaxExposureBpsUpdated`, `VrfTimeoutUpdated`.
+- Roulette: `CreditsDeposited(player, amount)`, `CreditsWithdrawn(player, amount)`, `BetWon(betId, player, payout)` (replaces `BetSettled`; losers emit nothing), `SpinRequested(roundId, requestId, timestamp)`, `RoundSettled(roundId, winningNumber, totalBets, totalPayout, int256 netToPlayers)`, `DeficitRecorded(roundId, deficit)`, `DeficitCovered(amount, remaining)`, `RoundRefunded(roundId)`, `MaxExposureBpsUpdated`, `VrfTimeoutUpdated`.
 - Vault: `PayoutFunded(amount)`, `RouletteSet`, `MaxCapacityUpdated`. Profit has no event (plain transfer).
 
 ## 7. Impact on other code
@@ -275,11 +277,11 @@ Why a cap is needed: without one, a busy round could run out of callback gas and
 | Vault shortfall | Pull what's available, record a deficit, freeze bets/spins until covered (§5.7) |
 | Withdrawals during DEFICIT | Allowed, first come, first served (§5.7) |
 | VRF timeout refund | Kept, `vrfTimeout` default 1 hour, minimum 1 hour (§5.8) |
-| Bets per round | Constant `MAX_BETS_PER_ROUND = 40`, from the benchmark; `callbackGasLimit` stays immutable at `2_500_000` (§5.10) |
+| Bets per round | Constant `MAX_BETS_PER_ROUND = 70`, from the benchmark; `callbackGasLimit` stays immutable at `2_500_000` (§5.10) |
 
 ## 10. Open questions
 
-None. `MAX_BETS_PER_ROUND = 40` was set from the benchmark (§5.10).
+None. `MAX_BETS_PER_ROUND = 70` was set from the benchmark (§5.10).
 
 ## 11. Future upgrade: settlement outside the VRF callback
 

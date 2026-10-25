@@ -47,7 +47,7 @@ Inside bets are checked against the table layout (rows 1-2-3, 4-5-6, …, 34-35-
 
 - **Exposure limit**: a round's net worst case (every bet winning, minus the stakes) can't exceed `maxExposureBps` (default 10%) of the vault's assets.
 - **LP protection**: LP deposits and withdrawals are blocked while a spin is pending or a deficit is open, and withdrawals always leave the open round's worst case in the vault.
-- **Bounded callback**: at most `MAX_BETS_PER_ROUND = 40` bets per round, so a round where every bet wins settles within the 2.5M callback gas limit (`test/gas/CallbackGas.t.sol`).
+- **Bounded callback**: at most `MAX_BETS_PER_ROUND = 70` bets per round, so a round where every bet wins settles within the 2.5M callback gas limit (`test/gas/CallbackGas.t.sol`).
 - **Deficit backstop**: if the vault can't pay a round (unreachable under the exposure limit, but handled), Roulette records a deficit, blocks betting, and `coverDeficit()` clears it after a top-up.
 - **VRF never answers**: after `vrfTimeout` (minimum 1 hour) the owner can refund the round; every stake is re-credited and a late answer is rejected.
 - **Fixed coordinator**: only the VRF coordinator set at deploy time can deliver a result. Roulette implements `rawFulfillRandomWords` itself instead of inheriting `VRFConsumerBaseV2Plus`, whose owner-callable `setCoordinator` would let the owner block a result and refund the round.
@@ -99,6 +99,7 @@ forge test
 | `test/RouletteTypes.t.sol` | Bet validation against a reference table layout (every split pair and street, fuzzed corners and lines), masks |
 | `test/invariant/` | Stateful invariants over random player, LP and owner actions: Roulette's USDC exactly backs credits and open stakes, no deficit, vault balance = LP flows + house PnL, reserve coverage, credit conservation |
 | `test/gas/CallbackGas.t.sol` | Callback gas benchmark that sizes `MAX_BETS_PER_ROUND` |
+| `test/gas/HouseGas.t.sol` | Gas the house pays per round: `spin()` and the callback as VRF bills it |
 | `test/fuzz/CryticTester.sol` | The same invariants for Echidna and Medusa |
 
 ```bash
