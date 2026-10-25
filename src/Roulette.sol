@@ -138,6 +138,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     error Roulette__SpinPending();
     error Roulette__OnlyVrfCoordinator();
     error Roulette__VrfTimeoutTooShort();
+    error Roulette__InvalidBetLimits();
 
     /*//////////////////////////////////////////////////////////////
                                FUNCTIONS
@@ -170,6 +171,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     ) Ownable(msg.sender) {
         if (_maxExposureBps > BPS) revert Roulette__InvalidBps();
         if (_vrfTimeout < MIN_VRF_TIMEOUT) revert Roulette__VrfTimeoutTooShort();
+        _checkBetLimits(_minBet, _maxBet);
         i_vrfCoordinator = IVRFCoordinatorV2Plus(_vrfCoordinator);
         i_subscriptionId = _subscriptionId;
         i_gasLane = _gasLane;
@@ -356,14 +358,16 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         emit RoundRefunded(roundId);
     }
 
-    /// @notice Update minimum bet
+    /// @notice Update minimum bet, keeping 0 < minBet <= maxBet
     function setMinBet(uint256 _minBet) external onlyOwner {
+        _checkBetLimits(_minBet, maxBet);
         emit MinBetUpdated(minBet, _minBet);
         minBet = _minBet;
     }
 
-    /// @notice Update maximum bet
+    /// @notice Update maximum bet, keeping minBet <= maxBet <= uint48 max (a bet's stored amount)
     function setMaxBet(uint256 _maxBet) external onlyOwner {
+        _checkBetLimits(minBet, _maxBet);
         emit MaxBetUpdated(maxBet, _maxBet);
         maxBet = _maxBet;
     }
@@ -531,6 +535,14 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     /// @notice Get total credits in circulation
     function getTotalCredits() external view returns (uint256) {
         return totalCredits;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                     INTERNAL READ-ONLY FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+    /// @dev 0 < minBet <= maxBet <= uint48 max, so every accepted bet amount fits in Bet.amount
+    function _checkBetLimits(uint256 _minBet, uint256 _maxBet) internal pure {
+        if (_minBet == 0 || _minBet > _maxBet || _maxBet > type(uint48).max) revert Roulette__InvalidBetLimits();
     }
 
     /*//////////////////////////////////////////////////////////////

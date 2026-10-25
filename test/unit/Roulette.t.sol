@@ -803,19 +803,7 @@ contract RouletteTest is BaseTest {
 
     function test_Constructor_RevertWhen_VrfTimeoutBelowMinimum() public {
         vm.expectRevert(Roulette.Roulette__VrfTimeoutTooShort.selector);
-        new Roulette(
-            address(vrfCoordinator),
-            subscriptionId,
-            GAS_LANE,
-            CALLBACK_GAS_LIMIT,
-            false,
-            address(vault),
-            MIN_BET,
-            MAX_BET,
-            SPIN_DELAY,
-            MAX_EXPOSURE_BPS,
-            0
-        );
+        _deployRoulette(MIN_BET, MAX_BET, MAX_EXPOSURE_BPS, 0);
     }
 
     /// @dev Emergency stop restarts the clock: no instant refund using an old spin's timestamp
@@ -888,6 +876,8 @@ contract RouletteTest is BaseTest {
         roulette.setMinBet(1);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         roulette.setMaxBet(1);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
+        roulette.setSpinDelay(1);
         vm.stopPrank();
     }
 
@@ -905,5 +895,55 @@ contract RouletteTest is BaseTest {
         assertEq(roulette.minBet(), 2e6);
         assertEq(roulette.maxBet(), 50e6);
         assertEq(roulette.spinDelay(), 10);
+    }
+
+    function test_SetBetLimits_Boundaries() public {
+        vm.startPrank(owner);
+        roulette.setMinBet(MAX_BET); // min == max is allowed
+        roulette.setMinBet(1);
+        roulette.setMaxBet(type(uint48).max);
+        roulette.setMaxBet(1);
+        vm.stopPrank();
+        assertEq(roulette.minBet(), 1);
+        assertEq(roulette.maxBet(), 1);
+    }
+
+    function test_SetBetLimits_RevertWhen_Invalid() public {
+        vm.startPrank(owner);
+        vm.expectRevert(Roulette.Roulette__InvalidBetLimits.selector);
+        roulette.setMinBet(0);
+        vm.expectRevert(Roulette.Roulette__InvalidBetLimits.selector);
+        roulette.setMinBet(MAX_BET + 1);
+        vm.expectRevert(Roulette.Roulette__InvalidBetLimits.selector);
+        roulette.setMaxBet(MIN_BET - 1);
+        vm.expectRevert(Roulette.Roulette__InvalidBetLimits.selector);
+        roulette.setMaxBet(uint256(type(uint48).max) + 1);
+        vm.stopPrank();
+    }
+
+    function test_Constructor_RevertWhen_InvalidBetLimits() public {
+        vm.expectRevert(Roulette.Roulette__InvalidBetLimits.selector);
+        _deployRoulette(MIN_BET, MIN_BET - 1, MAX_EXPOSURE_BPS, VRF_TIMEOUT);
+        vm.expectRevert(Roulette.Roulette__InvalidBetLimits.selector);
+        _deployRoulette(0, MAX_BET, MAX_EXPOSURE_BPS, VRF_TIMEOUT);
+    }
+
+    function _deployRoulette(uint256 minBet, uint256 maxBet, uint256 maxExposureBps, uint256 vrfTimeout)
+        internal
+        returns (Roulette)
+    {
+        return new Roulette(
+            address(vrfCoordinator),
+            subscriptionId,
+            GAS_LANE,
+            CALLBACK_GAS_LIMIT,
+            false,
+            address(vault),
+            minBet,
+            maxBet,
+            SPIN_DELAY,
+            maxExposureBps,
+            vrfTimeout
+        );
     }
 }
