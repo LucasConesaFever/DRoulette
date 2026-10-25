@@ -351,7 +351,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
             RouletteTypes.PlayerStats storage stats = s_playerStats[bet.player];
             stats.totalBets -= 1; // {count}
             stats.totalWagered -= bet.amount; // D6{USDC}
-            stats.lastRoundWagered -= bet.amount; // D6{USDC}
+            // lastRoundWagered stays: the round is marked completed below, so getPlayerStats ignores it
         }
         // D6{credit} += D6{USDC} (sum of stakes, refunded 1:1)
         totalCredits += round.totalBets;

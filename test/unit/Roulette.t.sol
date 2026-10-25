@@ -4,7 +4,9 @@ pragma solidity ^0.8.34;
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Roulette} from "src/Roulette.sol";
+import {RouletteVault} from "src/RouletteVault.sol";
 import {RouletteTypes} from "src/libraries/RouletteTypes.sol";
 import {BaseTest} from "test/utils/BaseTest.sol";
 
@@ -1035,5 +1037,232 @@ contract RouletteTest is BaseTest {
         _createDeficit();
         usdc.mint(address(roulette), 10_000e6);
         assertEq(roulette.excessUsdc(), 0);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                       SETTLEMENT EDGE CASES
+    //////////////////////////////////////////////////////////////*/
+    function test_Settle_VaultHoldsExactlyOwed_NoDeficit() public {
+        _fundCredits(player1, 100e6);
+        _betStraight(player1, 17, 100e6); // net 3,500 to the player
+        uint256 requestId = _spin();
+        deal(address(usdc), address(vault), 3_500e6);
+
+        _fulfill(requestId, 17);
+        assertEq(uint8(roulette.state()), uint8(RouletteTypes.RouletteState.OPEN));
+        assertEq(roulette.deficit(), 0);
+        assertEq(usdc.balanceOf(address(vault)), 0);
+        assertEq(roulette.credits(player1), 3_600e6);
+        _assertRouletteSolvent();
+    }
+
+    /// @dev fundPayout(0) reverts, which would revert the callback; an empty vault must skip the call
+    function test_Settle_VaultEmpty_DeficitWithoutFundPayout() public {
+        _fundCredits(player1, 100e6);
+        _betStraight(player1, 17, 100e6);
+        uint256 requestId = _spin();
+        deal(address(usdc), address(vault), 0);
+
+        vm.expectCall(address(vault), abi.encodeWithSelector(RouletteVault.fundPayout.selector), 0);
+        _fulfill(requestId, 17);
+        assertEq(uint8(roulette.state()), uint8(RouletteTypes.RouletteState.DEFICIT));
+        assertEq(roulette.deficit(), 3_500e6);
+        assertTrue(roulette.getRound(1).completed);
+    }
+
+    function test_Deficit_EmitsAmountOwed() public {
+        _fundCredits(player1, 100e6);
+        _betStraight(player1, 17, 100e6);
+        uint256 requestId = _spin();
+        deal(address(usdc), address(vault), 1_000e6);
+
+        vm.expectEmit(address(roulette));
+        emit Roulette.DeficitRecorded(1, 2_500e6);
+        _fulfill(requestId, 17);
+    }
+
+    /// @dev Payouts equal stakes: nothing moves between Roulette and the vault
+    function test_Settle_NetZero_NoTransfer() public {
+        _fundCredits(player1, 20e6);
+        _betRed(player1, 10e6);
+        _betBlack(player1, 10e6);
+        uint256 requestId = _spin();
+        uint256 vaultBefore = usdc.balanceOf(address(vault));
+
+        vm.expectCall(address(usdc), abi.encodeWithSelector(IERC20.transfer.selector), 0);
+        vm.expectCall(address(vault), abi.encodeWithSelector(RouletteVault.fundPayout.selector), 0);
+        _fulfill(requestId, RED_NUMBER);
+        assertEq(usdc.balanceOf(address(vault)), vaultBefore);
+        assertEq(roulette.credits(player1), 20e6);
+        assertEq(uint8(roulette.state()), uint8(RouletteTypes.RouletteState.OPEN));
+        (,, int256 netPnl) = roulette.getHouseStats();
+        assertEq(netPnl, 0);
+    }
+
+    function test_Settle_StoresWinningNumberAndColor() public {
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        _spinAndFulfill(RED_NUMBER);
+        RouletteTypes.Round memory round = roulette.getRound(1);
+        assertEq(round.winningNumber, RED_NUMBER);
+        assertEq(uint8(round.winningColor), uint8(RouletteTypes.Color.RED));
+
+        _betRed(player1, 1e6);
+        _spinAndFulfill(BLACK_NUMBER);
+        assertEq(uint8(roulette.getRound(2).winningColor), uint8(RouletteTypes.Color.BLACK));
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                         REFUND AND BOUNDARIES
+    //////////////////////////////////////////////////////////////*/
+    function test_RefundRound_MarksRoundAndKeepsStatsConsistent() public {
+        _fundCredits(player1, 20e6);
+        _betRed(player1, 5e6);
+        _spinAndFulfill(BLACK_NUMBER); // player1 loses 5
+        _betRed(player1, 3e6);
+        _spin();
+
+        vm.warp(block.timestamp + VRF_TIMEOUT + 1); // any time past the timeout works
+        vm.prank(owner);
+        roulette.refundRound();
+
+        RouletteTypes.Round memory round = roulette.getRound(2);
+        assertTrue(round.completed && round.refunded);
+        RouletteTypes.PlayerStatsView memory stats = roulette.getPlayerStats(player1);
+        assertEq(stats.totalBets, 1);
+        assertEq(stats.totalWagered, 5e6);
+        assertEq(stats.totalLost, 5e6, "refunded stake is not counted as lost or pending");
+
+        // The next round's stats start clean
+        _betRed(player1, 2e6);
+        assertEq(roulette.getPlayerStats(player1).totalLost, 5e6);
+    }
+
+    function test_RefundRound_RevertWhen_OneSecondEarly() public {
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        _spin();
+        vm.warp(block.timestamp + VRF_TIMEOUT - 1);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Roulette.Roulette__VrfTimeoutNotReached.selector, 1));
+        roulette.refundRound();
+    }
+
+    function test_Spin_ExactlyAtSpinDelay() public {
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        _spinAndFulfill(RED_NUMBER);
+        _betRed(player1, 1e6);
+        uint256 lastSpin = roulette.lastSpinTimestamp();
+
+        vm.warp(lastSpin + SPIN_DELAY - 1);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Roulette.Roulette__SpinDelayNotMet.selector, 1));
+        roulette.spin();
+
+        vm.warp(lastSpin + SPIN_DELAY);
+        vm.prank(owner);
+        roulette.spin();
+        assertEq(uint8(roulette.state()), uint8(RouletteTypes.RouletteState.CALCULATING));
+    }
+
+    function test_SetVrfTimeout_AcceptsMinimum() public {
+        uint256 minTimeout = roulette.MIN_VRF_TIMEOUT();
+        vm.prank(owner);
+        roulette.setVrfTimeout(minTimeout);
+        assertEq(roulette.vrfTimeout(), minTimeout);
+    }
+
+    function test_Constructor_Boundaries() public {
+        vm.expectRevert(Roulette.Roulette__InvalidBps.selector);
+        _deployRoulette(MIN_BET, MAX_BET, 10_001, VRF_TIMEOUT);
+
+        Roulette edge = _deployRoulette(MIN_BET, MAX_BET, 10_000, roulette.MIN_VRF_TIMEOUT());
+        assertEq(edge.maxExposureBps(), 10_000);
+        assertEq(edge.vrfTimeout(), roulette.MIN_VRF_TIMEOUT());
+    }
+
+    function test_Constructor_StoresVrfConfig() public {
+        bytes32 otherLane = keccak256("lane");
+        Roulette nativeRoulette = new Roulette(
+            address(vrfCoordinator),
+            subscriptionId,
+            otherLane,
+            CALLBACK_GAS_LIMIT,
+            true,
+            address(vault),
+            MIN_BET,
+            MAX_BET,
+            SPIN_DELAY,
+            MAX_EXPOSURE_BPS,
+            VRF_TIMEOUT
+        );
+        (address coordinator, uint256 subId, bytes32 gasLane, uint32 gasLimit, bool nativePayment) =
+            nativeRoulette.getVrfConfig();
+        assertEq(coordinator, address(vrfCoordinator));
+        assertEq(subId, subscriptionId);
+        assertEq(gasLane, otherLane);
+        assertEq(gasLimit, CALLBACK_GAS_LIMIT);
+        assertTrue(nativePayment);
+
+        (,, gasLane,, nativePayment) = roulette.getVrfConfig();
+        assertEq(gasLane, GAS_LANE);
+        assertFalse(nativePayment);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                              VIEWS / ADMIN
+    //////////////////////////////////////////////////////////////*/
+    function test_PauseThenUnpause_BettingWorksAgain() public {
+        _fundCredits(player1, 10e6);
+        vm.prank(owner);
+        roulette.pause();
+        vm.prank(player1);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        roulette.placeBet(RouletteTypes.BetType.RED, new uint8[](0), 1e6);
+
+        vm.prank(owner);
+        roulette.unpause();
+        _betRed(player1, 1e6);
+        assertEq(roulette.credits(player1), 9e6);
+    }
+
+    function test_GetRoundBets_EmptyRound() public view {
+        assertEq(roulette.getRoundBets(1).length, 0);
+        assertEq(roulette.getRoundBets(99).length, 0);
+    }
+
+    function test_GetBetResult_OutsideRoundOrUnsettled() public {
+        _fundCredits(player1, 100e6);
+        _betRed(player1, 10e6); // bet 1, round 1
+        _spinAndFulfill(RED_NUMBER);
+        _betRed(player1, 10e6); // bet 2, round 2
+        _betRed(player1, 10e6); // bet 3, round 2
+
+        (bool settled, bool won, uint256 payout) = roulette.getBetResult(1, 2); // below round 2's range
+        assertFalse(settled || won);
+        assertEq(payout, 0);
+        (settled, won, payout) = roulette.getBetResult(4, 2); // above round 2's range
+        assertFalse(settled || won);
+        (settled, won, payout) = roulette.getBetResult(2, 2); // in range, round not settled yet
+        assertFalse(settled || won);
+        assertEq(payout, 0);
+
+        // Refunded rounds never count as settled
+        _spin();
+        vm.warp(block.timestamp + VRF_TIMEOUT);
+        vm.prank(owner);
+        roulette.refundRound();
+        (settled, won, payout) = roulette.getBetResult(2, 2);
+        assertFalse(settled || won);
+    }
+
+    function test_GetRequestIdToRoundId() public {
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        uint256 requestId = _spin();
+        assertEq(roulette.getRequestIdToRoundId(requestId), 1);
+        _fulfill(requestId, RED_NUMBER);
+        assertEq(roulette.getRequestIdToRoundId(requestId), 0);
     }
 }

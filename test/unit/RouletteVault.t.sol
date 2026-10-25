@@ -86,10 +86,24 @@ contract RouletteVaultTest is BaseTest {
     }
 
     function test_MaxDeposit_UnlimitedCapacity() public {
+        _lpDeposit(lp1, 1_000e6);
         vm.prank(owner);
         vault.setMaxCapacity(type(uint256).max);
         assertEq(vault.maxDeposit(lp1), type(uint256).max);
         assertEq(vault.maxMint(lp1), type(uint256).max);
+    }
+
+    /// @dev The cap can end up below the assets (owner lowers it, or house profits): no deposits, no revert
+    function test_MaxDeposit_ZeroWhenAssetsAboveCapacity() public {
+        _lpDeposit(lp1, 1_000e6);
+        vm.prank(owner);
+        vault.setMaxCapacity(500e6);
+        assertEq(vault.maxDeposit(lp2), 0);
+        assertEq(vault.maxMint(lp2), 0);
+
+        vm.prank(owner);
+        vault.setMaxCapacity(1_000e6); // exactly full
+        assertEq(vault.maxDeposit(lp2), 0);
     }
 
     function test_SetMaxCapacity() public {
@@ -121,6 +135,15 @@ contract RouletteVaultTest is BaseTest {
         RouletteVault fresh = new RouletteVault(address(usdc), "V", "V", 100e6);
         assertFalse(fresh.isLpLocked());
         assertEq(fresh.maxDeposit(lp1), 100e6);
+
+        // Nothing reserved: the whole deposit can leave
+        usdc.mint(lp1, 40e6);
+        vm.startPrank(lp1);
+        usdc.approve(address(fresh), 40e6);
+        uint256 shares = fresh.deposit(40e6, lp1);
+        vm.stopPrank();
+        assertEq(fresh.maxWithdraw(lp1), 40e6);
+        assertEq(fresh.maxRedeem(lp1), shares);
     }
 
     function testFuzz_FundPayout_RevertWhen_NotRoulette(address caller) public {
@@ -159,6 +182,20 @@ contract RouletteVaultTest is BaseTest {
         roulette.emergencyResumeBetting();
         assertFalse(vault.isLpLocked());
         assertEq(vault.maxWithdraw(lp1), LP_LIQUIDITY);
+    }
+
+    /// @dev withdraw goes through maxWithdraw, redeem through maxRedeem: both must be locked
+    function test_Withdraw_RevertWhen_SpinPending() public {
+        _lpDeposit(lp1, LP_LIQUIDITY);
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        _spin();
+
+        assertEq(vault.maxWithdraw(lp1), 0);
+        assertEq(vault.maxRedeem(lp1), 0);
+        vm.prank(lp1);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxWithdraw.selector, lp1, 1e6, 0));
+        vault.withdraw(1e6, lp1, lp1);
     }
 
     function test_Ownership_TwoStep() public {
