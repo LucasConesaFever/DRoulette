@@ -58,11 +58,12 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     RouletteTypes.RouletteState public state;
     uint256 public minBet; // D6{USDC}
     uint256 public maxBet; // D6{USDC}
-    uint256 public currentRoundId; // {id}
-    uint256 public betIdCounter; // {id}
+    // One slot: read by spin and placeBet, written once per round by the callback
+    uint64 public currentRoundId; // {id}
+    uint64 public betIdCounter; // {id}
+    uint40 public lastSpinTimestamp; // {s} timestamp
+    uint40 public spinRequestedAt; // {s} timestamp
     uint256 public spinDelay; // {s} duration
-    uint256 public lastSpinTimestamp; // {s} timestamp
-    uint256 public spinRequestedAt; // {s} timestamp
     /// @notice Max net worst-case payout of a round, in bps of vault assets
     uint256 public maxExposureBps; // BPS{1} [0, BPS]
     /// @notice Time after a spin request before the owner can refund the round
@@ -290,7 +291,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         if (s_rounds[roundId].firstBetId == 0) revert Roulette__NoActiveBets();
 
         _setState(RouletteTypes.RouletteState.CALCULATING);
-        spinRequestedAt = block.timestamp;
+        // forge-lint: disable-next-line(unsafe-typecast) timestamps fit in uint40 until ~year 36800
+        spinRequestedAt = uint40(block.timestamp);
 
         uint256 requestId = i_vrfCoordinator.requestRandomWords(
             VRFV2PlusClient.RandomWordsRequest({
@@ -365,7 +367,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         round.completed = true;
         round.refunded = true;
 
-        currentRoundId = roundId + 1;
+        // forge-lint: disable-next-line(unsafe-typecast) round ids can't reach 2^64
+        currentRoundId = uint64(roundId + 1);
         _setState(RouletteTypes.RouletteState.OPEN);
         emit RoundRefunded(roundId);
     }
@@ -434,7 +437,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     function emergencyStopBetting() external onlyOwner {
         if (state == RouletteTypes.RouletteState.DEFICIT) revert Roulette__DeficitOpen();
         if (state == RouletteTypes.RouletteState.CALCULATING) revert Roulette__AlreadyCalculating();
-        spinRequestedAt = block.timestamp;
+        // forge-lint: disable-next-line(unsafe-typecast) timestamps fit in uint40 until ~year 36800
+        spinRequestedAt = uint40(block.timestamp);
         pendingRequestId = 0; // the last request was fulfilled or refunded; anyone may refund this stop
         _setState(RouletteTypes.RouletteState.CALCULATING);
     }
@@ -684,8 +688,10 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         // forge-lint: disable-next-line(unsafe-typecast) payout <= round maxExposure, bounded by MAX_BETS_PER_ROUND uint48 bets
         round.totalPayout = uint128(totalPayout); // D6{USDC} gross
 
-        lastSpinTimestamp = block.timestamp; // {s}
-        currentRoundId = roundId + 1;
+        // forge-lint: disable-next-line(unsafe-typecast) timestamps fit in uint40 until ~year 36800
+        lastSpinTimestamp = uint40(block.timestamp); // {s}
+        // forge-lint: disable-next-line(unsafe-typecast) round ids can't reach 2^64
+        currentRoundId = uint64(roundId + 1);
 
         emit SpinCompleted(roundId, winningNumber, winningColor, totalPayout);
         emit RoundSettled(roundId, roundTotalBets, totalPayout, netToPlayers);
