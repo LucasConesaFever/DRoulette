@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAccount, useBlock, useConnect, useDisconnect, usePublicClient, useReadContract, useReadContracts, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { BaseError, ContractFunctionRevertedError, formatUnits, parseUnits } from 'viem';
 import { CONTRACTS, BetType, BET_TYPE_LABELS, PAYOUT_MULTIPLIERS, INSIDE_BET_SIZES, getNumberColor, maskToNumbers, formatUSDC, parseUSDC } from './config';
@@ -7,9 +7,7 @@ import { ERC20_ABI, VAULT_ABI, ROULETTE_ABI, VRF_COORDINATOR_ABI } from './abis'
 // Roulette wheel numbers in order (European)
 const WHEEL_NUMBERS = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26];
 
-// State labels
 // Matches RouletteTypes.RouletteState: OPEN (0), CALCULATING (1), DEFICIT (2)
-const STATE_LABELS = ['Open', 'Spinning', 'Deficit'];
 const STATE_OPEN = 0;
 const STATE_CALCULATING = 1;
 const STATE_DEFICIT = 2;
@@ -47,63 +45,168 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// Roulette Wheel Component
+const POCKET = 360 / WHEEL_NUMBERS.length;
+const mod360 = (a: number) => ((a % 360) + 360) % 360;
+// Point at `radius` and `angle` degrees clockwise from the top, in the wheel's viewBox (centre 0,0)
+const polar = (radius: number, angle: number) => {
+  const rad = (angle * Math.PI) / 180;
+  return [radius * Math.sin(rad), -radius * Math.cos(rad)];
+};
+
+function pocketPath(i: number, inner: number, outer: number) {
+  const a0 = i * POCKET - POCKET / 2;
+  const a1 = a0 + POCKET;
+  const [x0, y0] = polar(outer, a0);
+  const [x1, y1] = polar(outer, a1);
+  const [x2, y2] = polar(inner, a1);
+  const [x3, y3] = polar(inner, a0);
+  return `M${x0},${y0} A${outer},${outer} 0 0 1 ${x1},${y1} L${x2},${y2} A${inner},${inner} 0 0 0 ${x3},${y3} Z`;
+}
+
+// The wheel turns to bring the winning pocket under the pointer at the top; the ball rests there
 function RouletteWheel({ winningNumber, isSpinning }: { winningNumber: number | null; isSpinning: boolean }) {
-  const [rotation, setRotation] = useState(0);
-  const [ballRotation, setBallRotation] = useState(0);
+  const [rotation, setRotation] = useState<number | null>(null);
 
   useEffect(() => {
-    if (isSpinning) {
-      // Animate wheel spinning
-      const interval = setInterval(() => {
-        setRotation(r => r + 15);
-        setBallRotation(b => b - 25);
-      }, 50);
-      return () => clearInterval(interval);
-    } else if (winningNumber !== null) {
-      // Slot i is drawn at i * anglePerSlot clockwise from the top, so a wheel rotation of
-      // -i * anglePerSlot (mod 360) puts it under the pointer. Keep turning forward to get there.
-      const numberIndex = WHEEL_NUMBERS.indexOf(winningNumber);
-      const anglePerSlot = 360 / WHEEL_NUMBERS.length;
-      const mod = (a: number) => ((a % 360) + 360) % 360;
-      setRotation(r => r + 360 + mod(-numberIndex * anglePerSlot - r));
-      // The ball turns the other way and stops at the top, under the pointer
-      setBallRotation(b => b - 360 - mod(b));
-    }
+    if (isSpinning || winningNumber === null) return;
+    // Pocket i is drawn at i * POCKET clockwise from the top: a rotation of -i * POCKET puts it on top.
+    // The first result is shown in place; later ones land after two more turns.
+    const target = -WHEEL_NUMBERS.indexOf(winningNumber) * POCKET;
+    setRotation(r => (r === null ? target : r + 720 + mod360(target - r)));
   }, [isSpinning, winningNumber]);
 
   return (
-    <div className="wheel-container">
-      <div className="wheel-outer">
-        <div className="wheel" style={{ transform: `rotate(${rotation}deg)` }}>
-          {WHEEL_NUMBERS.map((num, i) => {
-            const angle = (i * 360) / WHEEL_NUMBERS.length;
-            const color = getNumberColor(num);
-            return (
-              <div
-                key={num}
-                className={`wheel-slot ${color}`}
-                style={{
-                  transform: `rotate(${angle}deg)`,
-                }}
-              >
-                <span className="wheel-number">{num}</span>
-              </div>
-            );
-          })}
-        </div>
-        <div className="ball-track" style={{ transform: `rotate(${ballRotation}deg)` }}>
-          <div className="ball"></div>
-        </div>
-        <div className="wheel-center">
-          {winningNumber !== null && !isSpinning && (
-            <div className={`winning-display ${getNumberColor(winningNumber)}`}>
-              {winningNumber}
-            </div>
-          )}
-        </div>
+    <div className="wheel" aria-label={winningNumber !== null ? `Last result ${winningNumber}` : 'Roulette wheel'}>
+      <svg viewBox="-100 -100 200 200" role="img">
+        <circle r="99" className="wheel-rim" />
+        <g className={isSpinning ? 'wheel-spin' : undefined}>
+          <g className="wheel-rotor" style={{ transform: `rotate(${rotation ?? 0}deg)` }}>
+            <circle r="96" className="wheel-track" />
+            {WHEEL_NUMBERS.map((num, i) => (
+              <g key={num}>
+                <path d={pocketPath(i, 64, 92)} className={`pocket pocket-${getNumberColor(num)}`} />
+                <text
+                  className="pocket-number"
+                  transform={`rotate(${i * POCKET}) translate(0 -80)`}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                >
+                  {num}
+                </text>
+              </g>
+            ))}
+            <circle r="64" className="wheel-cone" />
+            {Array.from({ length: 8 }, (_, k) => (
+              <line key={k} x1="0" y1="-18" x2="0" y2="-60" className="wheel-spoke" transform={`rotate(${k * 45})`} />
+            ))}
+          </g>
+        </g>
+        <g className={isSpinning ? 'ball-spin' : undefined}>
+          <circle r="96" fill="none" />
+          {(isSpinning || winningNumber !== null) && <circle cx="0" cy="-67.5" r="3.6" className="ball" />}
+        </g>
+        <circle r="20" className="wheel-hub" />
+        <path d="M-5,-99 L5,-99 L0,-90 Z" className="wheel-pointer" />
+      </svg>
+      <div className={`wheel-result ${winningNumber !== null && !isSpinning ? getNumberColor(winningNumber) : ''}`}>
+        {isSpinning ? '' : winningNumber ?? ''}
       </div>
-      <div className="wheel-pointer"></div>
+    </div>
+  );
+}
+
+// European layout: 0 on the left, three rows of twelve, "2 to 1" boxes, dozens, then the even-money bets
+type TableProps = {
+  betType: BetType;
+  selectedNumbers: number[];
+  selector: number | null;
+  disabled: boolean;
+  onNumber: (n: number) => void;
+  onOutside: (type: BetType, selector?: number) => void;
+};
+
+// Grid position on the horizontal layout; CSS transposes it for the vertical layout on phones
+const place = (row: number, col: number, rowSpan = 1, colSpan = 1) =>
+  ({ '--r': row, '--c': col, '--rs': rowSpan, '--cs': colSpan }) as React.CSSProperties;
+
+function BettingTable({ betType, selectedNumbers, selector, disabled, onNumber, onOutside }: TableProps) {
+  const inside = betType <= BetType.LINE;
+  const isOn = (type: BetType, sel?: number) => betType === type && (sel === undefined || selector === sel);
+  const cell = (on: boolean) => `cell${on ? ' cell-on' : ''}`;
+  const evenMoney: [BetType, string][] = [
+    [BetType.LOW, '1 to 18'],
+    [BetType.EVEN, 'Even'],
+    [BetType.RED, ''],
+    [BetType.BLACK, ''],
+    [BetType.ODD, 'Odd'],
+    [BetType.HIGH, '19 to 36'],
+  ];
+
+  return (
+    <div className="table" role="group" aria-label="Betting table">
+      <button
+        style={place(1, 1, 3, 1)}
+        className={`${cell(inside && selectedNumbers.includes(0))} cell-zero`}
+        onClick={() => onNumber(0)}
+        disabled={disabled}
+        aria-pressed={inside && selectedNumbers.includes(0)}
+      >
+        0
+      </button>
+      {[3, 2, 1].flatMap(row => Array.from({ length: 12 }, (_, col) => col * 3 + row)).map(num => {
+        const on = inside && selectedNumbers.includes(num);
+        return (
+          <button
+            key={num}
+            className={`${cell(on)} cell-number cell-${getNumberColor(num)}`}
+            style={place(4 - (((num - 1) % 3) + 1), Math.ceil(num / 3) + 1)}
+            onClick={() => onNumber(num)}
+            disabled={disabled}
+            aria-pressed={on}
+            aria-label={`${num} ${getNumberColor(num)}`}
+          >
+            <span>{num}</span>
+          </button>
+        );
+      })}
+      {[3, 2, 1].map(col => (
+        <button
+          key={`col${col}`}
+          className={`${cell(isOn(BetType.COLUMN, col))} cell-column`}
+          style={place(4 - col, 14)}
+          onClick={() => onOutside(BetType.COLUMN, col)}
+          disabled={disabled}
+          aria-pressed={isOn(BetType.COLUMN, col)}
+          aria-label={`Column ${col}, pays 2 to 1`}
+        >
+          2 to 1
+        </button>
+      ))}
+      {[1, 2, 3].map(d => (
+        <button
+          key={`dozen${d}`}
+          style={place(4, 2 + (d - 1) * 4, 1, 4)}
+          className={`${cell(isOn(BetType.DOZEN, d))} cell-dozen`}
+          onClick={() => onOutside(BetType.DOZEN, d)}
+          disabled={disabled}
+          aria-pressed={isOn(BetType.DOZEN, d)}
+        >
+          {d === 1 ? '1st 12' : d === 2 ? '2nd 12' : '3rd 12'}
+        </button>
+      ))}
+      {evenMoney.map(([type, label], i) => (
+        <button
+          key={type}
+          style={place(5, 2 + i * 2, 1, 2)}
+          className={`${cell(isOn(type))} cell-even`}
+          onClick={() => onOutside(type)}
+          disabled={disabled}
+          aria-pressed={isOn(type)}
+          aria-label={label || (type === BetType.RED ? 'Red' : 'Black')}
+        >
+          {label || <span className={`diamond diamond-${type === BetType.RED ? 'red' : 'black'}`} />}
+        </button>
+      ))}
     </div>
   );
 }
@@ -651,545 +754,425 @@ function App() {
     return label;
   };
 
+  // Table clicks: a number starts a straight bet unless an inside shape is being built
+  const handleTableNumber = (num: number) => {
+    if (betType > BetType.LINE) {
+      setBetType(BetType.STRAIGHT_UP);
+      setBetNumbers(num.toString());
+    } else {
+      handleNumberClick(num);
+    }
+  };
+  const handleTableOutside = (type: BetType, selector?: number) => {
+    setBetType(type);
+    setBetNumbers(selector !== undefined ? String(selector) : '');
+  };
+
+  const SHAPES: [BetType, string][] = [
+    [BetType.STRAIGHT_UP, 'Straight'],
+    [BetType.SPLIT, 'Split'],
+    [BetType.STREET, 'Street'],
+    [BetType.CORNER, 'Corner'],
+    [BetType.LINE, 'Line'],
+  ];
+  const CHIPS = [1, 5, 25, 100, 500];
+  const addChip = (value: number) => {
+    const current = Number(betAmount) || 0;
+    setBetAmount(String(Math.round((current + value) * 1e6) / 1e6));
+  };
+
+  // What the bet slip says about the current selection
+  const selectionLabel = (() => {
+    const name = BET_TYPE_LABELS[betType].replace(/ \(.*\)$/, '');
+    if (betType === BetType.DOZEN || betType === BetType.COLUMN) return `${name} ${selectedNumbers[0] ?? ''}`;
+    if (betType > BetType.COLUMN) return name;
+    return selectedNumbers.length ? `${name} on ${selectedNumbers.join(', ')}` : name;
+  })();
+  const missingNumbers = insideSize !== undefined ? insideSize - selectedNumbers.length : 0;
+  const betAmountValue = Number(betAmount);
+  const potentialReturn = betAmountValue > 0 ? betAmountValue * (PAYOUT_MULTIPLIERS[betType] + 1) : null;
+
+  // Plain description of a result: colour, parity, half and dozen
+  const describeNumber = (n: number) => {
+    if (n === 0) return 'zero, every outside bet loses';
+    return [getNumberColor(n), n % 2 ? 'odd' : 'even', n <= 18 ? '1 to 18' : '19 to 36', `${['1st', '2nd', '3rd'][Math.ceil(n / 12) - 1]} 12`].join(', ');
+  };
+
+  const roundLine = isDeficit
+    ? `Betting is closed until the bank covers a ${formatUSDC(deficit ?? 0n)} USDC shortfall.`
+    : isSpinning
+      ? `Round ${currentRoundId?.toString() ?? ''} is spinning. Waiting for Chainlink VRF.`
+      : isPaused
+        ? 'The dealer has paused betting. You can still cash out credits.'
+        : `Round ${currentRoundId?.toString() ?? ''} is open for bets.`;
+  const myNet = playerStats ? playerStats.totalWon - playerStats.totalLost : 0n;
+  const signedUSDC = (v: bigint) => `${v < 0n ? '−' : v > 0n ? '+' : ''}${formatUSDC(v < 0n ? -v : v)}`;
+
   return (
     <div className="app">
-      <header className="header">
-        <h1>DWheel Roulette</h1>
-        <div className="wallet-section">
+      <header className="masthead">
+        <div className="brand">
+          <span className="brand-name">DWheel</span>
+          <span className="brand-note">European roulette, settled on-chain</span>
+        </div>
+        <nav className="tabs" aria-label="Sections">
+          <button className={activeTab === 'game' ? 'tab tab-on' : 'tab'} onClick={() => setActiveTab('game')} aria-current={activeTab === 'game'}>
+            Table
+          </button>
+          <button className={activeTab === 'vault' ? 'tab tab-on' : 'tab'} onClick={() => setActiveTab('vault')} aria-current={activeTab === 'vault'}>
+            Bank
+          </button>
+        </nav>
+        <div className="account">
           {isConnected ? (
-            <div className="wallet-info">
-              <span className="wallet-address">{address?.slice(0, 6)}...{address?.slice(-4)}</span>
-              {isOwner && <span className="owner-badge">Owner</span>}
-              <button className="disconnect-btn" onClick={() => disconnect()}>Disconnect</button>
-              <button className="disconnect-btn" onClick={refetchAll}>Refresh</button>
-            </div>
+            <>
+              <dl className="purse">
+                <div>
+                  <dt>Credits</dt>
+                  <dd className="purse-credits">{formatUSDC(credits ?? 0n)}</dd>
+                </div>
+                <div>
+                  <dt>Wallet USDC</dt>
+                  <dd>{formatUSDC(usdcBalance ?? 0n)}</dd>
+                </div>
+              </dl>
+              <span className="wallet-address" title={address}>
+                {address?.slice(0, 6)}…{address?.slice(-4)}
+                {isOwner && <span className="dealer-mark">dealer</span>}
+              </span>
+              <button className="link-button" onClick={refetchAll}>Refresh</button>
+              <button className="link-button" onClick={() => disconnect()}>Disconnect</button>
+            </>
           ) : (
-            <div className="connect-buttons">
-              {connectors.map((connector) => (
-                <button key={connector.id} className="connect-btn" onClick={() => connect({ connector })}>
-                  Connect {connector.name}
-                </button>
-              ))}
-            </div>
+            connectors.map(connector => (
+              <button key={connector.uid} className="button button-quiet" onClick={() => connect({ connector })}>
+                Connect {connector.name}
+              </button>
+            ))
           )}
         </div>
       </header>
 
-      {/* Tab Navigation */}
-      <div className="tab-nav">
-        <button
-          className={`tab-btn ${activeTab === 'game' ? 'active' : ''}`}
-          onClick={() => setActiveTab('game')}
-        >
-          Game
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'vault' ? 'active' : ''}`}
-          onClick={() => setActiveTab('vault')}
-        >
-          Vault
-        </button>
-      </div>
-
-      {/* Deficit banner: the vault could not fully cover the last round's winnings */}
       {isDeficit && (
-        <div className="deficit-banner">
-          <div className="deficit-text">
-            <strong>Betting paused: house deficit of ${formatUSDC(deficit ?? 0n)} USDC.</strong>
-            <span>The vault could not fully cover the last round's payouts. Credits stay withdrawable up to Roulette's USDC balance; betting and LP actions resume once the deficit is covered.</span>
-          </div>
+        <div className="notice notice-alarm" role="alert">
+          <p>
+            The bank could not pay the last round in full and is short {formatUSDC(deficit ?? 0n)} USDC.
+            Betting and bank deposits and withdrawals resume once it is covered. Credits stay withdrawable.
+          </p>
           {isConnected && (
-            <button className="btn-secondary" onClick={handleCoverDeficit} disabled={isWriting}>
-              Cover Deficit
+            <button className="button button-quiet" onClick={handleCoverDeficit} disabled={isWriting}>
+              Cover shortfall
             </button>
           )}
         </div>
       )}
 
-      {/* Game Tab */}
       {activeTab === 'game' && (
-        <div className="game-tab">
-          {/* Roulette Wheel */}
-          <section className="wheel-section">
-            <RouletteWheel winningNumber={lastWinningNumber} isSpinning={isSpinning} />
+        <>
+          <main className="floor">
+            <section className="wheel-side" aria-label="Wheel">
+              <RouletteWheel winningNumber={lastWinningNumber} isSpinning={isSpinning} />
+              <p className="round-line">{roundLine}</p>
+              {lastWinningNumber !== null && !isSpinning && (
+                <p className="last-result">
+                  Last result <strong className={`number-badge ${getNumberColor(lastWinningNumber)}`}>{lastWinningNumber}</strong>{' '}
+                  {describeNumber(lastWinningNumber)}
+                </p>
+              )}
+              <p className="limits">
+                Bets from {formatUSDC(minBet ?? 0n)} to {formatUSDC(maxBet ?? 0n)} USDC
+              </p>
 
-            {/* Game Status */}
-            <div className="game-status-bar">
-              <div className="status-item">
-                <span className="status-label">Status</span>
-                <span className={`status-badge ${STATE_LABELS[Number(gameState ?? 0)].toLowerCase()}`}>
-                  {STATE_LABELS[Number(gameState ?? 0)]}
-                </span>
-              </div>
-              <div className="status-item">
-                <span className="status-label">Round</span>
-                <span className="status-value">#{currentRoundId?.toString() || '0'}</span>
-              </div>
-              <div className="status-item">
-                <span className="status-label">Bet Range</span>
-                <span className="status-value">{formatUSDC(minBet ?? BigInt(0))} - {formatUSDC(maxBet ?? BigInt(0))}</span>
-              </div>
-              {lastWinningNumber !== null && (
-                <div className="status-item last-number">
-                  <span className="status-label">Last Result</span>
-                  <span className={`mini-number ${getNumberColor(lastWinningNumber)}`}>
-                    {lastWinningNumber}
-                  </span>
+              {isOwner && (
+                <div className="dealer" aria-label="Dealer controls">
+                  <h2>Dealer</h2>
+                  <div className="dealer-actions">
+                    {gameState === STATE_OPEN && (
+                      <button className="button button-brass" onClick={handleSpin} disabled={isWriting}>
+                        Spin the wheel
+                      </button>
+                    )}
+                    {isSpinning && (
+                      <>
+                        <button className="button button-brass" onClick={handleFulfillVRF} disabled={isWriting || !pendingRequestId}>
+                          Deliver VRF result (Anvil)
+                        </button>
+                        <button
+                          className="button button-quiet"
+                          onClick={handleRefundRound}
+                          disabled={isWriting || !canRefund}
+                          title={refundAvailableAt ? `Available after ${new Date(refundAvailableAt * 1000).toLocaleTimeString()}` : undefined}
+                        >
+                          Refund round
+                        </button>
+                      </>
+                    )}
+                    <button className="button button-quiet" onClick={handleTogglePause} disabled={isWriting}>
+                      {isPaused ? 'Resume betting' : 'Pause betting'}
+                    </button>
+                  </div>
+                  {isSpinning && !!pendingRequestId && (
+                    <p className="fine-print">VRF request {pendingRequestId.toString().slice(0, 10)}…</p>
+                  )}
                 </div>
               )}
-            </div>
+            </section>
 
-            {/* Owner Spin Controls - Only visible to owner */}
-            {isOwner && (
-              <div className="spin-controls">
-                {gameState === STATE_OPEN && (
+            <section className="layout-side" aria-label="Place a bet">
+              <div className="shapes" role="radiogroup" aria-label="Inside bet">
+                {SHAPES.map(([type, label]) => (
                   <button
-                    className="btn-spin"
-                    onClick={handleSpin}
-                    disabled={isWriting}
+                    key={type}
+                    role="radio"
+                    aria-checked={betType === type}
+                    className={betType === type ? 'shape shape-on' : 'shape'}
+                    onClick={() => handleBetTypeChange(type)}
                   >
-                    SPIN THE WHEEL
+                    {label}
+                    <span className="shape-pays">{PAYOUT_MULTIPLIERS[type]} to 1</span>
                   </button>
-                )}
-                {gameState === STATE_CALCULATING && (
-                  <>
-                    <div className="vrf-status">
-                      <span className="vrf-waiting">Waiting for VRF...</span>
-                      {!!pendingRequestId && (
-                        <span className="vrf-request-id">Request ID: {pendingRequestId.toString().slice(0, 8)}...</span>
-                      )}
-                    </div>
-                    <button
-                      className="btn-fulfill"
-                      onClick={handleFulfillVRF}
-                      disabled={isWriting || !pendingRequestId}
-                    >
-                      Fulfill VRF (Anvil Only)
-                    </button>
-                    <button
-                      className="btn-secondary"
-                      onClick={handleRefundRound}
-                      disabled={isWriting || !canRefund}
-                      title={refundAvailableAt ? `Available after ${new Date(refundAvailableAt * 1000).toLocaleTimeString()}` : undefined}
-                    >
-                      Refund Round
-                    </button>
-                  </>
-                )}
-                <button className="btn-secondary" onClick={handleTogglePause} disabled={isWriting}>
-                  {isPaused ? 'Unpause Betting' : 'Pause Betting'}
-                </button>
+                ))}
               </div>
-            )}
 
-            {isPaused && (
-              <p className="info-text">Betting is paused by the owner. Credits can still be withdrawn.</p>
-            )}
+              <BettingTable
+                betType={betType}
+                selectedNumbers={selectedNumbers}
+                selector={betType === BetType.DOZEN || betType === BetType.COLUMN ? selectedNumbers[0] ?? null : null}
+                disabled={!isConnected}
+                onNumber={handleTableNumber}
+                onOutside={handleTableOutside}
+              />
 
-            {/* Non-owner sees spinning status */}
-            {!isOwner && gameState === STATE_CALCULATING && (
-              <div className="spin-controls">
-                <div className="vrf-status">
-                  <span className="vrf-waiting">Wheel is spinning... Waiting for result</span>
-                </div>
-              </div>
-            )}
-          </section>
-
-          {isConnected && (
-            <>
-              {/* Balances */}
-              <section className="card balances-card">
-                <h2>Your Balances</h2>
-                <div className="balance-grid">
-                  <div className="balance-item">
-                    <span className="balance-label">USDC Wallet</span>
-                    <span className="balance-value">${formatUSDC(usdcBalance ?? BigInt(0))}</span>
-                  </div>
-                  <div className="balance-item highlight">
-                    <span className="balance-label">Game Credits</span>
-                    <span className="balance-value">${formatUSDC(credits ?? BigInt(0))}</span>
-                  </div>
-                </div>
-              </section>
-
-              {/* USDC Faucet */}
-              <section className="card">
-                <h2>Get USDC</h2>
-                <div className="form-row">
-                  <input
-                    type="number"
-                    placeholder="Amount"
-                    value={faucetAmount}
-                    onChange={(e) => setFaucetAmount(e.target.value)}
-                  />
-                  <button className="btn-primary" onClick={handleFaucet} disabled={isWriting}>
-                    Mint USDC
-                  </button>
-                </div>
-              </section>
-
-              {/* Credits Management */}
-              <section className="card">
-                <h2>Credits</h2>
-                <div className="form-group">
-                  <h3>Deposit USDC to Credits</h3>
-                  <div className="form-row">
-                    <input
-                      type="number"
-                      placeholder="Amount"
-                      value={depositAmount}
-                      onChange={(e) => setDepositAmount(e.target.value)}
-                    />
-                    <button className="btn-primary" onClick={handleDepositCredits} disabled={isWriting || isApproving}>
-                      {isApproving ? 'Approving...' : 'Deposit'}
-                    </button>
-                  </div>
-                </div>
-                <div className="form-group">
-                  <h3>Withdraw Credits to USDC</h3>
-                  <div className="form-row">
-                    <input
-                      type="number"
-                      placeholder="Amount"
-                      value={withdrawAmount}
-                      onChange={(e) => setWithdrawAmount(e.target.value)}
-                    />
-                    <button className="btn-secondary" onClick={handleWithdrawCredits} disabled={isWriting}>
-                      Withdraw
-                    </button>
-                  </div>
-                </div>
-              </section>
-
-              {/* Betting */}
-              <section className="card betting-card">
-                <h2>Place Bet</h2>
-                <div className="betting-form">
-                  <div className="form-group">
-                    <label>Bet Type</label>
-                    <select
-                      value={betType.toString()}
-                      onChange={(e) => handleBetTypeChange(Number(e.target.value))}
-                    >
-                      {Object.entries(BET_TYPE_LABELS).map(([value, label]) => (
-                        <option key={value} value={value}>{label}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {insideSize !== undefined && (
-                    <div className="form-group">
-                      <label>
-                        {insideSize === 1 ? 'Number (0-36)' : `Numbers (${selectedNumbers.length}/${insideSize}, pick on the grid or type)`}
-                      </label>
-                      <input
-                        type="text"
-                        placeholder={insideSize === 1 ? 'e.g., 7' : { 2: 'e.g., 1,2 or 1,4', 3: 'e.g., 4,5,6', 4: 'e.g., 1,2,4,5', 6: 'e.g., 1,2,3,4,5,6' }[insideSize]}
-                        value={betNumbers}
-                        onChange={(e) => setBetNumbers(e.target.value)}
-                      />
-                    </div>
+              <div className="slip">
+                <div className="slip-selection">
+                  <span className="slip-bet">{selectionLabel}</span>
+                  <span className="slip-pays">pays {PAYOUT_MULTIPLIERS[betType]} to 1</span>
+                  {missingNumbers > 0 && (
+                    <span className="slip-hint">
+                      Pick {missingNumbers} more {missingNumbers === 1 ? 'number' : 'numbers'} on the table
+                    </span>
                   )}
-
-                  {(betType === BetType.DOZEN || betType === BetType.COLUMN) && (
-                    <div className="form-group">
-                      <label>{betType === BetType.DOZEN ? 'Dozen' : 'Column'}</label>
-                      <select value={betNumbers} onChange={(e) => setBetNumbers(e.target.value)}>
-                        {betType === BetType.DOZEN ? (
-                          <>
-                            <option value="1">1st (1-12)</option>
-                            <option value="2">2nd (13-24)</option>
-                            <option value="3">3rd (25-36)</option>
-                          </>
-                        ) : (
-                          <>
-                            <option value="1">1st (1, 4, ... 34)</option>
-                            <option value="2">2nd (2, 5, ... 35)</option>
-                            <option value="3">3rd (3, 6, ... 36)</option>
-                          </>
-                        )}
-                      </select>
-                    </div>
-                  )}
-
-                  <div className="form-group">
-                    <label>Amount (USDC)</label>
+                  {!numbersValid && <span className="slip-hint">Numbers must be whole, 0 to 36, without repeats</span>}
+                </div>
+                <div className="slip-stake">
+                  <div className="chips" aria-label="Add chips">
+                    {CHIPS.map(c => (
+                      <button key={c} className="chip" onClick={() => addChip(c)} aria-label={`Add ${c}`}>
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="stake-field">
+                    <span>Stake</span>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="decimal"
                       placeholder="Bet amount"
                       value={betAmount}
-                      onChange={(e) => setBetAmount(e.target.value)}
+                      onChange={e => setBetAmount(e.target.value)}
                     />
-                  </div>
-
-                  <button
-                    className="btn-primary bet-btn"
-                    onClick={handlePlaceBet}
-                    disabled={isWriting || gameState !== STATE_OPEN || !!isPaused || !betNumbersReady}
-                  >
-                    Place Bet
-                  </button>
-                </div>
-
-                {/* Number Grid for quick selection */}
-                <div className="number-grid">
-                  <button
-                    className={`number-btn green ${insideSize && selectedNumbers.includes(0) ? 'selected' : ''}`}
-                    onClick={() => handleNumberClick(0)}
-                  >
-                    0
-                  </button>
-                  {/* Table layout: rows 3-6-...-36, 2-5-...-35, 1-4-...-34, so neighbours on the table are neighbours here */}
-                  {[3, 2, 1].flatMap(row => Array.from({ length: 12 }, (_, col) => col * 3 + row)).map(num => (
-                    <button
-                      key={num}
-                      className={`number-btn ${getNumberColor(num)} ${insideSize && selectedNumbers.includes(num) ? 'selected' : ''}`}
-                      onClick={() => handleNumberClick(num)}
-                    >
-                      {num}
+                  </label>
+                  {betAmount && (
+                    <button className="link-button" onClick={() => setBetAmount('')}>
+                      Clear
                     </button>
-                  ))}
-                </div>
-
-                {/* Quick bet buttons */}
-                <div className="quick-bets">
+                  )}
                   <button
-                    className={`quick-bet-btn red ${betType === BetType.RED ? 'selected' : ''}`}
-                    onClick={() => handleBetTypeChange(BetType.RED)}
+                    className="button button-brass place-bet"
+                    onClick={handlePlaceBet}
+                    disabled={isWriting || gameState !== STATE_OPEN || !!isPaused || !betNumbersReady || !isConnected}
                   >
-                    RED
-                  </button>
-                  <button
-                    className={`quick-bet-btn black ${betType === BetType.BLACK ? 'selected' : ''}`}
-                    onClick={() => handleBetTypeChange(BetType.BLACK)}
-                  >
-                    BLACK
-                  </button>
-                  <button
-                    className={`quick-bet-btn ${betType === BetType.ODD ? 'selected' : ''}`}
-                    onClick={() => handleBetTypeChange(BetType.ODD)}
-                  >
-                    ODD
-                  </button>
-                  <button
-                    className={`quick-bet-btn ${betType === BetType.EVEN ? 'selected' : ''}`}
-                    onClick={() => handleBetTypeChange(BetType.EVEN)}
-                  >
-                    EVEN
-                  </button>
-                  <button
-                    className={`quick-bet-btn ${betType === BetType.LOW ? 'selected' : ''}`}
-                    onClick={() => handleBetTypeChange(BetType.LOW)}
-                  >
-                    1-18
-                  </button>
-                  <button
-                    className={`quick-bet-btn ${betType === BetType.HIGH ? 'selected' : ''}`}
-                    onClick={() => handleBetTypeChange(BetType.HIGH)}
-                  >
-                    19-36
+                    Place bet
                   </button>
                 </div>
-              </section>
+                {potentialReturn !== null && betNumbersReady && (
+                  <p className="fine-print">A win returns {potentialReturn.toLocaleString('en-US', { maximumFractionDigits: 6 })} credits, stake included.</p>
+                )}
+              </div>
+            </section>
+          </main>
 
-              {/* Your bets: open round, and results of the last round */}
-              {(myCurrentBets.length > 0 || myLastBets.length > 0) && (
-                <section className="card">
-                  <h2>Your Bets</h2>
-                  {myCurrentBets.length > 0 && (
-                    <div className="form-group">
-                      <h3>Round #{currentRoundId?.toString()} ({isSpinning ? 'spinning' : 'open'})</h3>
-                      <ul className="bet-list">
-                        {myCurrentBets.map(bet => (
-                          <li key={bet.id.toString()}>
+          {isConnected ? (
+            <section className="ledger">
+              <div className="ledger-bets">
+                <h2>Your bets</h2>
+                {myCurrentBets.length === 0 && myLastBets.length === 0 && (
+                  <p className="empty">No bets yet. Pick a spot on the table, add chips and place your bet.</p>
+                )}
+                {myCurrentBets.length > 0 && (
+                  <>
+                    <h3>Round {currentRoundId?.toString()}, {isSpinning ? 'spinning' : 'open'}</h3>
+                    <ul className="bet-list">
+                      {myCurrentBets.map(bet => (
+                        <li key={bet.id.toString()}>
+                          <span>{describeBet(bet)}</span>
+                          <span className="amount">{formatUSDC(BigInt(bet.amount))}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {myLastBets.length > 0 && lastRound && (
+                  <>
+                    <h3>
+                      Round {lastRoundId?.toString()}{' '}
+                      {lastRoundSettled ? (
+                        <>landed on <span className={`number-badge small ${getNumberColor(lastRound.winningNumber)}`}>{lastRound.winningNumber}</span></>
+                      ) : (
+                        'was refunded'
+                      )}
+                    </h3>
+                    <ul className="bet-list">
+                      {myLastBets.map(bet => {
+                        const won = lastRoundSettled && maskToNumbers(bet.numbersMask).includes(lastRound.winningNumber);
+                        const payout = BigInt(bet.amount) * BigInt(PAYOUT_MULTIPLIERS[bet.betType] + 1);
+                        return (
+                          <li key={bet.id.toString()} className={lastRoundSettled ? (won ? 'win' : 'loss') : ''}>
                             <span>{describeBet(bet)}</span>
-                            <span>${formatUSDC(BigInt(bet.amount))}</span>
+                            <span className="amount">
+                              {formatUSDC(BigInt(bet.amount))}
+                              {lastRoundSettled && (won ? ` → won ${formatUSDC(payout)}` : ' → lost')}
+                            </span>
                           </li>
-                        ))}
-                      </ul>
+                        );
+                      })}
+                    </ul>
+                  </>
+                )}
+                {playerStats && (
+                  <dl className="record">
+                    <div>
+                      <dt>Bets placed</dt>
+                      <dd>{playerStats.totalBets.toString()}</dd>
                     </div>
-                  )}
-                  {myLastBets.length > 0 && lastRound && (
-                    <div className="form-group">
-                      <h3>
-                        Round #{lastRoundId?.toString()}{' '}
-                        {lastRoundSettled ? <>result <span className={`mini-number ${getNumberColor(lastRound.winningNumber)}`}>{lastRound.winningNumber}</span></> : '(refunded)'}
-                      </h3>
-                      <ul className="bet-list">
-                        {myLastBets.map(bet => {
-                          const won = lastRoundSettled && maskToNumbers(bet.numbersMask).includes(lastRound.winningNumber);
-                          const payout = BigInt(bet.amount) * BigInt(PAYOUT_MULTIPLIERS[bet.betType] + 1);
-                          return (
-                            <li key={bet.id.toString()} className={lastRoundSettled ? (won ? 'win' : 'loss') : ''}>
-                              <span>{describeBet(bet)}</span>
-                              <span>
-                                ${formatUSDC(BigInt(bet.amount))}
-                                {lastRoundSettled && (won ? ` → won $${formatUSDC(payout)}` : ' → lost')}
-                              </span>
-                            </li>
-                          );
-                        })}
-                      </ul>
+                    <div>
+                      <dt>Wagered</dt>
+                      <dd>{formatUSDC(playerStats.totalWagered)}</dd>
                     </div>
-                  )}
-                </section>
-              )}
+                    <div>
+                      <dt>Net result</dt>
+                      <dd className={myNet >= 0n ? 'win' : 'loss'}>{signedUSDC(myNet)}</dd>
+                    </div>
+                  </dl>
+                )}
+              </div>
 
-              {/* Player Stats */}
-              {playerStats && (
-                <section className="card">
-                  <h2>Your Stats</h2>
-                  <div className="stats-grid stats-grid-3">
-                    <div className="stat-item">
-                      <span className="stat-value">{playerStats.totalBets?.toString()}</span>
-                      <span className="stat-label">Total Bets</span>
-                    </div>
-                    <div className="stat-item">
-                      <span className="stat-value">${formatUSDC(playerStats.totalWagered ?? BigInt(0))}</span>
-                      <span className="stat-label">Wagered</span>
-                    </div>
-                    <div className={`stat-item ${(playerStats.totalWon ?? BigInt(0)) >= (playerStats.totalLost ?? BigInt(0)) ? 'win' : 'loss'}`}>
-                      <span className="stat-value">
-                        {(playerStats.totalWon ?? BigInt(0)) >= (playerStats.totalLost ?? BigInt(0)) ? '+' : '-'}
-                        ${formatUSDC(
-                          (playerStats.totalWon ?? BigInt(0)) >= (playerStats.totalLost ?? BigInt(0))
-                            ? (playerStats.totalWon ?? BigInt(0)) - (playerStats.totalLost ?? BigInt(0))
-                            : (playerStats.totalLost ?? BigInt(0)) - (playerStats.totalWon ?? BigInt(0))
-                        )}
-                      </span>
-                      <span className="stat-label">PnL</span>
-                    </div>
-                  </div>
-                </section>
-              )}
-            </>
+              <div className="ledger-cashier">
+                <h2>Credits</h2>
+                <p className="fine-print">One credit is one USDC. Bets are paid in credits; cash out any time.</p>
+                <form className="field-row" onSubmit={e => { e.preventDefault(); handleDepositCredits(); }}>
+                  <label>
+                    <span>Buy credits</span>
+                    <input type="text" inputMode="decimal" placeholder="USDC amount" value={depositAmount} onChange={e => setDepositAmount(e.target.value)} />
+                  </label>
+                  <button className="button button-quiet" type="submit" disabled={isWriting || isApproving}>
+                    {isApproving ? 'Approving USDC…' : 'Buy'}
+                  </button>
+                </form>
+                <form className="field-row" onSubmit={e => { e.preventDefault(); handleWithdrawCredits(); }}>
+                  <label>
+                    <span>Cash out</span>
+                    <input type="text" inputMode="decimal" placeholder="Credits" value={withdrawAmount} onChange={e => setWithdrawAmount(e.target.value)} />
+                  </label>
+                  <button className="button button-quiet" type="submit" disabled={isWriting}>
+                    Cash out
+                  </button>
+                </form>
+                <form className="field-row faucet" onSubmit={e => { e.preventDefault(); handleFaucet(); }}>
+                  <label>
+                    <span>Test USDC</span>
+                    <input type="text" inputMode="decimal" placeholder="Amount" value={faucetAmount} onChange={e => setFaucetAmount(e.target.value)} />
+                  </label>
+                  <button className="button button-quiet" type="submit" disabled={isWriting}>
+                    Mint
+                  </button>
+                </form>
+              </div>
+            </section>
+          ) : (
+            <p className="empty connect-hint">Connect a wallet to buy credits and bet.</p>
           )}
-        </div>
+        </>
       )}
 
-      {/* Vault Tab */}
-      {activeTab === 'vault' && isConnected && (
-        <div className="vault-tab">
-          {/* Your LP Position */}
-          <section className="card vault-position-card">
-            <h2>Your LP Position</h2>
-            <div className="vault-position">
-              <div className="position-main">
-                <span className="position-label">Position Value</span>
-                <span className="position-value">${formatUSDC(previewRedeemValue ?? BigInt(0))}</span>
-              </div>
-              <div className="position-shares">
-                <span className="shares-label">Shares Owned</span>
-                <span className="shares-value">{formatUnits(lpShares ?? BigInt(0), vaultDecimals)}</span>
-              </div>
-              <div className="position-shares">
-                <span className="shares-label">Withdrawable Now</span>
-                <span className="shares-value">${formatUSDC(lpMaxWithdraw ?? BigInt(0))}</span>
-              </div>
-            </div>
-            {lpLocked && (
-              <p className="info-text">LP deposits and withdrawals are locked while a spin is pending or a deficit is open.</p>
+      {activeTab === 'vault' && (
+        <main className="bank">
+          <section className="bank-position">
+            <h2>Your stake in the bank</h2>
+            <p className="fine-print">
+              The bank pays winners and keeps what players lose. Your shares rise and fall with its result; the edge is 1 in 37.
+            </p>
+            {isConnected ? (
+              <>
+                <dl className="position">
+                  <div className="position-value">
+                    <dt>Worth now</dt>
+                    <dd>{formatUSDC(previewRedeemValue ?? 0n)} USDC</dd>
+                  </div>
+                  <div>
+                    <dt>Shares</dt>
+                    <dd>{formatUnits(lpShares ?? 0n, vaultDecimals)}</dd>
+                  </div>
+                  <div>
+                    <dt>Withdrawable now</dt>
+                    <dd className="withdrawable">{formatUSDC(lpMaxWithdraw ?? 0n)} USDC</dd>
+                  </div>
+                </dl>
+                {lpLocked && (
+                  <p className="notice">Deposits and withdrawals are locked while the wheel is spinning or the bank is short.</p>
+                )}
+                <form className="field-row" onSubmit={e => { e.preventDefault(); handleLpDeposit(); }}>
+                  <label>
+                    <span>Add to the bank</span>
+                    <input type="text" inputMode="decimal" placeholder="USDC Amount" value={lpDepositAmount} onChange={e => setLpDepositAmount(e.target.value)} />
+                  </label>
+                  <button className="button button-quiet" type="submit" disabled={isWriting || isApproving || !!lpLocked}>
+                    {isApproving ? 'Approving USDC…' : 'Deposit'}
+                  </button>
+                </form>
+                <form className="field-row" onSubmit={e => { e.preventDefault(); handleLpWithdraw(); }}>
+                  <label>
+                    <span>Withdraw shares</span>
+                    <input type="text" inputMode="decimal" placeholder="Shares Amount" value={lpWithdrawShares} onChange={e => setLpWithdrawShares(e.target.value)} />
+                  </label>
+                  <button className="button button-quiet" type="submit" disabled={isWriting || !!lpLocked}>
+                    Withdraw
+                  </button>
+                </form>
+                <button className="link-button max-shares" onClick={() => setLpWithdrawShares(formatUnits(lpMaxRedeem ?? 0n, vaultDecimals))}>
+                  Use the most I can withdraw ({formatUnits(lpMaxRedeem ?? 0n, vaultDecimals)} shares)
+                </button>
+              </>
+            ) : (
+              <p className="empty">Connect a wallet to deposit into the bank.</p>
             )}
           </section>
 
-          {/* Vault Stats */}
-          <section className="card">
-            <h2>Vault Stats</h2>
-            <div className="stats-grid stats-grid-3">
-              <div className="stat-item">
-                <span className="stat-value">${formatUSDC(vaultTotalAssets ?? BigInt(0))}</span>
-                <span className="stat-label">Total Assets</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-value">${sharePrice !== undefined ? formatUnits(sharePrice, 6) : '-'}</span>
-                <span className="stat-label">Share Price</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-value">${formatUSDC(vaultMaxCapacity ?? BigInt(0))}</span>
-                <span className="stat-label">Max Capacity</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-value">${formatUSDC(houseWagered)}</span>
-                <span className="stat-label">Total Wagered</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-value">${formatUSDC(housePaidOut)}</span>
-                <span className="stat-label">Total Paid Out</span>
-              </div>
-              <div className={`stat-item ${houseNetPnl >= 0n ? 'win' : 'loss'}`}>
-                <span className="stat-value">
-                  {houseNetPnl >= 0n ? '+' : '-'}${formatUSDC(houseNetPnl >= 0n ? houseNetPnl : -houseNetPnl)}
-                </span>
-                <span className="stat-label">House PnL</span>
-              </div>
-            </div>
-            <p className="info-text">LP status: {lpLocked ? 'Locked' : 'Open'}</p>
+          <section className="bank-books">
+            <h2>The bank's books</h2>
+            <dl className="books">
+              <div><dt>Assets</dt><dd>{formatUSDC(vaultTotalAssets ?? 0n)}</dd></div>
+              <div><dt>Value of one share</dt><dd>{sharePrice !== undefined ? formatUnits(sharePrice, 6) : '–'}</dd></div>
+              <div><dt>Capacity</dt><dd>{formatUSDC(vaultMaxCapacity ?? 0n)}</dd></div>
+              <div><dt>Wagered by players</dt><dd>{formatUSDC(houseWagered)}</dd></div>
+              <div><dt>Paid to winners</dt><dd>{formatUSDC(housePaidOut)}</dd></div>
+              <div><dt>Bank result</dt><dd className={houseNetPnl >= 0n ? 'win' : 'loss'}>{signedUSDC(houseNetPnl)}</dd></div>
+            </dl>
+            <p className="fine-print">Amounts in USDC. Deposits and withdrawals are {lpLocked ? 'locked right now' : 'open'}.</p>
           </section>
-
-          {/* LP Deposit */}
-          <section className="card">
-            <h2>Provide Liquidity</h2>
-            <p className="info-text">Deposit USDC to earn yield from house edge profits. Your position value changes based on player wins/losses.</p>
-            <div className="form-group">
-              <h3>Deposit USDC</h3>
-              <div className="form-row">
-                <input
-                  type="number"
-                  placeholder="USDC Amount"
-                  value={lpDepositAmount}
-                  onChange={(e) => setLpDepositAmount(e.target.value)}
-                />
-                <button className="btn-primary" onClick={handleLpDeposit} disabled={isWriting || isApproving || !!lpLocked}>
-                  {isApproving ? 'Approving...' : 'Deposit'}
-                </button>
-              </div>
-            </div>
-          </section>
-
-          {/* LP Withdraw */}
-          <section className="card">
-            <h2>Withdraw Liquidity</h2>
-            <p className="info-text">Redeem your LP shares for USDC. Value may be higher or lower than deposited amount based on house performance.</p>
-            <div className="form-group">
-              <h3>Withdraw Shares</h3>
-              <div className="form-row">
-                <input
-                  type="number"
-                  placeholder="Shares Amount"
-                  value={lpWithdrawShares}
-                  onChange={(e) => setLpWithdrawShares(e.target.value)}
-                />
-                <button className="btn-secondary" onClick={handleLpWithdraw} disabled={isWriting || !!lpLocked}>
-                  Withdraw
-                </button>
-              </div>
-              <button
-                className="max-btn"
-                onClick={() => setLpWithdrawShares(formatUnits(lpMaxRedeem ?? BigInt(0), vaultDecimals))}
-              >
-                Max ({formatUnits(lpMaxRedeem ?? BigInt(0), vaultDecimals)} shares)
-              </button>
-            </div>
-          </section>
-        </div>
+        </main>
       )}
 
-      {/* Transaction Status */}
       {(isWriting || isConfirming || isConfirmed || txErrorMessage) && (
-        <div className="tx-status">
-          {isWriting && <span className="pending">Sending transaction...</span>}
-          {isConfirming && <span className="confirming">Confirming...</span>}
-          {isConfirmed && !isReverted && <span className="confirmed">Transaction confirmed!</span>}
+        <div className="tx-status" role="status">
+          {isWriting && <span className="pending">Confirm in your wallet…</span>}
+          {isConfirming && <span className="confirming">Waiting for the block…</span>}
+          {isConfirmed && !isReverted && <span className="confirmed">Done.</span>}
           {txErrorMessage && (
             <span className="error" onClick={() => setSimulationError(null)}>{txErrorMessage}</span>
           )}
         </div>
       )}
-
-      <footer>
-        <p>DWheel Roulette</p>
-      </footer>
     </div>
   );
 }
