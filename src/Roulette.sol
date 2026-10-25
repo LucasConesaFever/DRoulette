@@ -113,6 +113,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     event SpinDelayUpdated(uint256 oldDelay, uint256 newDelay); // {s}
     event MaxExposureBpsUpdated(uint256 oldBps, uint256 newBps); // BPS{1}
     event VrfTimeoutUpdated(uint256 oldTimeout, uint256 newTimeout); // {s}
+    event ExcessSwept(address indexed to, uint256 amount); // D6{USDC}
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -139,6 +140,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     error Roulette__OnlyVrfCoordinator();
     error Roulette__VrfTimeoutTooShort();
     error Roulette__InvalidBetLimits();
+    error Roulette__NothingToSweep();
 
     /*//////////////////////////////////////////////////////////////
                                FUNCTIONS
@@ -396,6 +398,18 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         vrfTimeout = _vrfTimeout;
     }
 
+    /**
+     * @notice Send USDC held beyond what Roulette owes to `to`
+     * @dev Recovers plain transfers to this contract, which back no credits
+     * @param to Recipient of the excess
+     */
+    function sweepExcess(address to) external nonReentrant onlyOwner {
+        uint256 excess = excessUsdc(); // D6{USDC}
+        if (excess == 0) revert Roulette__NothingToSweep();
+        emit ExcessSwept(to, excess);
+        usdc.safeTransfer(to, excess);
+    }
+
     /// @notice Pause the contract
     function pause() external onlyOwner {
         _pause();
@@ -442,6 +456,21 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         RouletteTypes.Round storage round = s_rounds[currentRoundId];
         // D6{USDC} net worst case = D6{USDC} gross maxExposure - D6{USDC} stakes
         reserved = round.maxExposure - round.totalBets;
+    }
+
+    /**
+     * @notice USDC held beyond the credits and the stakes of the round in progress
+     * @dev 0 while a deficit is open: the contract is short, not in excess
+     * @return D6{USDC} excess balance
+     */
+    function excessUsdc() public view returns (uint256) {
+        if (state == RouletteTypes.RouletteState.DEFICIT) return 0;
+        RouletteTypes.Round storage round = s_rounds[currentRoundId];
+        // D6{USDC} = D6{credit} (1:1) + D6{USDC} open stakes
+        uint256 owed = totalCredits + (round.completed ? 0 : round.totalBets);
+        uint256 balance = usdc.balanceOf(address(this)); // D6{USDC}
+        // D6{USDC} = D6{USDC} - D6{USDC}
+        return balance > owed ? balance - owed : 0;
     }
 
     /// @notice Get all bet IDs for a round

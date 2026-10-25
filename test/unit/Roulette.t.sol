@@ -985,4 +985,46 @@ contract RouletteTest is BaseTest {
             vrfTimeout
         );
     }
+
+    /*//////////////////////////////////////////////////////////////
+                              SWEEP EXCESS
+    //////////////////////////////////////////////////////////////*/
+    function test_SweepExcess_SendsOnlyStrayUsdc() public {
+        _fundCredits(player1, 50e6);
+        _betRed(player1, 10e6);
+        usdc.mint(address(roulette), 7e6); // plain transfer, backs no credits
+        assertEq(roulette.excessUsdc(), 7e6);
+
+        address treasury = makeAddr("treasury");
+        vm.prank(owner);
+        roulette.sweepExcess(treasury);
+        assertEq(usdc.balanceOf(treasury), 7e6);
+        assertEq(roulette.excessUsdc(), 0);
+        _assertRouletteSolvent();
+
+        // Stakes of the round in progress stay backed through settlement
+        _spinAndFulfill(RED_NUMBER);
+        assertEq(roulette.excessUsdc(), 0);
+        _assertRouletteSolvent();
+    }
+
+    function test_SweepExcess_RevertWhen_NothingToSweep() public {
+        _fundCredits(player1, 50e6);
+        vm.prank(owner);
+        vm.expectRevert(Roulette.Roulette__NothingToSweep.selector);
+        roulette.sweepExcess(owner);
+    }
+
+    function test_SweepExcess_RevertWhen_NotOwner() public {
+        usdc.mint(address(roulette), 1e6);
+        vm.prank(player1);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
+        roulette.sweepExcess(player1);
+    }
+
+    function test_SweepExcess_NothingDuringDeficit() public {
+        _createDeficit();
+        usdc.mint(address(roulette), 10_000e6);
+        assertEq(roulette.excessUsdc(), 0);
+    }
 }
