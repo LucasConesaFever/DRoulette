@@ -189,13 +189,14 @@ While in `DEFICIT`:
 
 ### 5.8 VRF never responds (refund)
 
-Separate failure from §5.7: Chainlink never calls back, so there is no winning number. `refundRound()` (`onlyOwner`, only when `state == CALCULATING` and `block.timestamp - spinRequestedAt >= vrfTimeout`):
+Separate failure from §5.7: Chainlink never calls back, so there is no winning number. `refundRound()` (only when `state == CALCULATING` and `block.timestamp - spinRequestedAt >= vrfTimeout`; owner-only while a VRF request is pending, permissionless after an emergency stop):
 
 - Re-credits each bet's `amount` and rolls back `playerStats.totalWagered` / `totalBets` for those bets.
 - Deletes the `requestId → roundId` mapping, so a late VRF answer reverts with `InvalidRequestId` instead of settling a refunded round.
 - Marks the round completed (no winning number), increments `currentRoundId`, sets state to OPEN. Emits `RoundRefunded(roundId)`.
 - `vrfTimeout` is owner-configurable, default 1 hour, with a hard minimum `MIN_VRF_TIMEOUT = 1 hours` (constructor and setter), so the owner can't refund a round right after seeing its result in the mempool.
-- `emergencyStopBetting` restarts the refund clock (`spinRequestedAt = block.timestamp`), so a stop followed by `refundRound` also waits the full timeout.
+- `emergencyStopBetting` starts the refund clock (`spinRequestedAt = block.timestamp`), so a stop followed by `refundRound` also waits the full timeout. It only works from OPEN, so it can't restart the clock of a round that is already CALCULATING.
+- Who can refund: with a VRF request pending, only the owner (anyone else could see a late answer in the mempool and cancel a round they lost). After an emergency stop no answer can arrive, so anyone can refund once the timeout passed: the owner can't keep LPs and stakes locked indefinitely.
 
 `emergencyResumeBetting` reverts while a VRF request is pending for the current round (`Roulette__SpinPending`): reopening bets then would let players bet after seeing the result in the mempool. A stuck spin goes through `refundRound()` instead. Neither emergency function can enter or leave `DEFICIT`.
 
@@ -213,16 +214,16 @@ Callback cost, measured by `test/gas/CallbackGas.t.sol`:
 
 | | Before | After |
 |---|---|---|
-| Fixed per round | ~101k | ~131k (includes the net transfer with the vault) |
-| Losing bet | ~46.5k | ~0.75k |
-| Winning bet, worst case | ~75k | ~46.5k (fresh player: credits and win stats go zero → non-zero, ~22k each) |
-| 45 bets, all winning | ~3.5M | ~2.22M |
-| 45 bets, all losing | ~2.2M | ~0.12M |
+| Fixed per round | ~101k | ~127k when the house wins, ~182k when the vault pays (includes the net transfer with the vault) |
+| Losing bet | ~46.5k | ~2.7k |
+| Winning bet, worst case | ~75k | ~51k (fresh player: credits and win stats go zero → non-zero, ~22k each) |
+| Full round, all winning | ~3.5M (45 bets) | ~2.22M (40 bets) |
+| Full round, all losing | ~2.2M (45 bets) | ~0.24M (40 bets) |
 
 A winner who already has credits and earlier wins costs ~10–15k; the cap has to use the worst case.
 
 - Add a constant `MAX_BETS_PER_ROUND` (no setter). `placeBet` reverts with `RoundFull()` past it.
-- Value: **45**, from the benchmark. 45 all-winning worst-case bets use ~2.22M gas, leaving ~11% of the 2.5M limit; the test asserts at least 10% headroom.
+- Value: **40**, from the benchmark with cold storage (`forge test --isolate`). 40 all-winning worst-case bets use ~2.22M gas, leaving ~11% of the 2.5M limit; the test asserts at least 10% headroom.
 - `callbackGasLimit` stays `immutable`. Deploy scripts raise it from `500_000` to `2_500_000` (Chainlink's usual maximum).
 - A test asserts that a full round of `MAX_BETS_PER_ROUND` winning bets fits in `callbackGasLimit`.
 
@@ -274,11 +275,11 @@ Why a cap is needed: without one, a busy round could run out of callback gas and
 | Vault shortfall | Pull what's available, record a deficit, freeze bets/spins until covered (§5.7) |
 | Withdrawals during DEFICIT | Allowed, first come, first served (§5.7) |
 | VRF timeout refund | Kept, `vrfTimeout` default 1 hour, minimum 1 hour (§5.8) |
-| Bets per round | Constant `MAX_BETS_PER_ROUND = 45`, from the benchmark; `callbackGasLimit` stays immutable at `2_500_000` (§5.10) |
+| Bets per round | Constant `MAX_BETS_PER_ROUND = 40`, from the benchmark; `callbackGasLimit` stays immutable at `2_500_000` (§5.10) |
 
 ## 10. Open questions
 
-None. `MAX_BETS_PER_ROUND = 45` was set from the benchmark (§5.10).
+None. `MAX_BETS_PER_ROUND = 40` was set from the benchmark (§5.10).
 
 ## 11. Future upgrade: settlement outside the VRF callback
 

@@ -8,7 +8,7 @@ import {HelperConfig} from "script/HelperConfig.s.sol";
 
 /**
  * @title DeployRoulette
- * @notice Deployment script for DWheel Roulette Phase 2 with Vault and Credits
+ * @notice Deployment script for DWheel Roulette with Vault and Credits
  * @dev Deploys MockUSDC (or uses real USDC), RouletteVault, and Roulette
  *      Uses Chainlink VRF V2.5
  */
@@ -34,7 +34,7 @@ contract DeployRoulette is Script {
         ) = helperConfig.activeNetworkConfig();
 
         console.log("===========================================");
-        console.log("DWheel Roulette Phase 2 Deployment (VRF V2.5)");
+        console.log("DWheel Roulette Deployment (VRF V2.5)");
         console.log("===========================================");
         console.log("Chain ID:", block.chainid);
         console.log("VRF Coordinator:", vrfCoordinator);
@@ -92,7 +92,7 @@ contract DeployRoulette is Script {
 
         // Print summary
         console.log("\n===========================================");
-        console.log("Deployment Summary - Phase 2 (VRF V2.5)");
+        console.log("Deployment Summary (VRF V2.5)");
         console.log("===========================================");
         console.log("USDC:", usdc);
         console.log("RouletteVault:", address(vault));
@@ -114,7 +114,7 @@ contract DeployRoulette is Script {
                 "   forge script script/Interactions.s.sol:AddConsumer --rpc-url $RPC_URL --account <name> --broadcast"
             );
         }
-        console.log("\nPhase 2 System:");
+        console.log("\nSystem:");
         console.log("- Players: usdc.approve(roulette) + roulette.depositCredits(USDC) -> get credits (1:1)");
         console.log("- Players: roulette.withdrawCredits() -> get USDC back");
         console.log("- LPs: vault.deposit(USDC) -> get vault shares (earn yield)");
