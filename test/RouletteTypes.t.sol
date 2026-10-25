@@ -279,13 +279,227 @@ contract RouletteTypesTest is Test {
         assertTrue(RouletteTypes.isValidSplit(1, 4));
         assertTrue(RouletteTypes.isValidSplit(34, 31));
 
-        // Not adjacent
+        // Zero splits with 1, 2 and 3
+        assertTrue(RouletteTypes.isValidSplit(0, 1));
+        assertTrue(RouletteTypes.isValidSplit(2, 0));
+        assertTrue(RouletteTypes.isValidSplit(0, 3));
+        assertFalse(RouletteTypes.isValidSplit(0, 4));
+
+        // Not adjacent: row ends, gaps, same number
+        assertFalse(RouletteTypes.isValidSplit(3, 4));
+        assertFalse(RouletteTypes.isValidSplit(6, 7));
         assertFalse(RouletteTypes.isValidSplit(1, 5));
         assertFalse(RouletteTypes.isValidSplit(1, 10));
+        assertFalse(RouletteTypes.isValidSplit(5, 5));
+        assertFalse(RouletteTypes.isValidSplit(0, 0));
 
         // Invalid numbers
         assertFalse(RouletteTypes.isValidSplit(37, 1));
         assertFalse(RouletteTypes.isValidSplit(1, 38));
+        assertFalse(RouletteTypes.isValidSplit(36, 37));
+    }
+
+    // ============ Table Geometry Tests ============
+
+    /// @dev Exhaustive: every ordered pair of 0..37 against the reference layout
+    function test_IsValidSplit_AllPairsMatchReference() public pure {
+        uint256 valid;
+        for (uint8 a; a <= 37; ++a) {
+            for (uint8 b; b <= 37; ++b) {
+                bool expected = _refSplit(a, b);
+                assertEq(RouletteTypes.isValidSplit(a, b), expected);
+                if (expected) ++valid;
+            }
+        }
+        // 24 in rows + 33 in columns + 3 with zero, each in both orders
+        assertEq(valid, 120);
+    }
+
+    /// @dev Exhaustive: every set of three numbers in 0..37, in two orders, against the reference layout
+    function test_IsValidStreet_AllTriplesMatchReference() public pure {
+        uint256 valid;
+        uint8[] memory numbers = new uint8[](3);
+        for (uint8 a; a <= 37; ++a) {
+            for (uint8 b = a + 1; b <= 37; ++b) {
+                for (uint8 c = b + 1; c <= 37; ++c) {
+                    (numbers[0], numbers[1], numbers[2]) = (a, b, c);
+                    bool expected = _refBox(numbers, 1, 3);
+                    assertEq(RouletteTypes.isValidStreet(numbers), expected);
+                    (numbers[0], numbers[1], numbers[2]) = (c, a, b);
+                    assertEq(RouletteTypes.isValidStreet(numbers), expected);
+                    if (expected) ++valid;
+                }
+            }
+        }
+        assertEq(valid, 12);
+    }
+
+    function testFuzz_IsValidCorner_MatchesReference(uint8[4] memory raw) public pure {
+        uint8[] memory numbers = new uint8[](4);
+        for (uint256 i; i < 4; ++i) {
+            numbers[i] = uint8(bound(raw[i], 0, 37));
+        }
+        assertEq(RouletteTypes.isValidCorner(numbers), _refCorner(numbers));
+    }
+
+    function testFuzz_IsValidLine_MatchesReference(uint8[6] memory raw) public pure {
+        uint8[] memory numbers = new uint8[](6);
+        for (uint256 i; i < 6; ++i) {
+            numbers[i] = uint8(bound(raw[i], 0, 37));
+        }
+        assertEq(RouletteTypes.isValidLine(numbers), _refBox(numbers, 2, 3));
+    }
+
+    /// @dev Random sets are almost never valid, so build valid shapes from the layout, shuffled, then break them
+    function testFuzz_InsideShapes_ValidAcceptedBrokenRejected(uint256 rowSeed, uint256 colSeed, uint256 shuffleSeed)
+        public
+        pure
+    {
+        uint8 row = uint8(rowSeed % 11); // 0..10, so row + 1 exists
+        uint8 col = uint8(colSeed % 2); // 0..1, so col + 1 exists
+        uint8 n = row * 3 + col + 1;
+
+        uint8[] memory street = _numbers3(row * 3 + 1, row * 3 + 2, row * 3 + 3);
+        uint8[] memory corner = _numbers4(n, n + 1, n + 3, n + 4);
+        uint8[] memory line = new uint8[](6);
+        for (uint8 i; i < 6; ++i) {
+            line[i] = row * 3 + 1 + i;
+        }
+        _shuffle(street, shuffleSeed);
+        _shuffle(corner, shuffleSeed);
+        _shuffle(line, shuffleSeed);
+
+        assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, street));
+        assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.CORNER, corner));
+        assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.LINE, line));
+        assertTrue(RouletteTypes.isValidSplit(n, n + 1));
+        assertTrue(RouletteTypes.isValidSplit(n + 3, n));
+
+        // A duplicate breaks every shape
+        street[0] = street[1];
+        corner[0] = corner[1];
+        line[0] = line[1];
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, street));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.CORNER, corner));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.LINE, line));
+    }
+
+    function test_ValidateBet_RejectsBadInsideBets() public pure {
+        // Split: wrong count, not adjacent
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.SPLIT, _numbers1(1)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.SPLIT, _numbers3(1, 2, 3)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.SPLIT, _numbers2(1, 5)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.SPLIT, _numbers2(3, 4)));
+        assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.SPLIT, _numbers2(0, 2)));
+
+        // Street: wrong count, wrong row, duplicate, above 36
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, _numbers2(1, 2)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, _numbers4(1, 2, 3, 4)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, _numbers3(2, 3, 4)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, _numbers3(1, 2, 4)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, _numbers3(1, 1, 3)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, _numbers3(35, 36, 37)));
+        assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.STREET, _numbers3(36, 34, 35)));
+
+        // Corner: wrong count, not a square, first four
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.CORNER, _numbers3(1, 2, 4)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.CORNER, _numbers4(2, 3, 4, 5)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.CORNER, _numbers4(3, 4, 6, 7)));
+        assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.CORNER, _numbers4(2, 3, 5, 6)));
+        assertTrue(RouletteTypes.validateBet(RouletteTypes.BetType.CORNER, _numbers4(3, 0, 2, 1)));
+
+        // Line: wrong count, rows not aligned
+        uint8[] memory five = new uint8[](5);
+        uint8[] memory shifted = new uint8[](6);
+        for (uint8 i; i < 6; ++i) {
+            if (i < 5) five[i] = i + 1;
+            shifted[i] = i + 2;
+        }
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.LINE, five));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.LINE, shifted));
+    }
+
+    function test_ValidateBet_RejectsWrongCountForOutsideBets() public pure {
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.DOZEN, new uint8[](0)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.DOZEN, _numbers2(1, 2)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.COLUMN, new uint8[](0)));
+        assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType.COLUMN, _numbers2(1, 2)));
+        for (uint8 t = uint8(RouletteTypes.BetType.RED); t <= uint8(RouletteTypes.BetType.HIGH); ++t) {
+            assertFalse(RouletteTypes.validateBet(RouletteTypes.BetType(t), _numbers1(1)));
+        }
+    }
+
+    /// @dev Reference layout: n >= 1 is at row (n - 1) / 3, column (n - 1) % 3; 0 sits above 1, 2 and 3
+    function _refSplit(uint8 a, uint8 b) internal pure returns (bool) {
+        if (a > 36 || b > 36 || a == b) return false;
+        if (a == 0 || b == 0) return a + b <= 3;
+        (uint256 rowA, uint256 colA) = ((a - 1) / 3, (a - 1) % 3);
+        (uint256 rowB, uint256 colB) = ((b - 1) / 3, (b - 1) % 3);
+        return (rowA == rowB && _absDiff(colA, colB) == 1) || (colA == colB && _absDiff(rowA, rowB) == 1);
+    }
+
+    /// @dev Reference: rows * cols distinct numbers in 1..36 whose rows and columns span exactly a rows x cols box
+    function _refBox(uint8[] memory numbers, uint256 rows, uint256 cols) internal pure returns (bool) {
+        if (numbers.length != rows * cols) return false;
+        (uint256 minRow, uint256 maxRow, uint256 minCol, uint256 maxCol) = (type(uint256).max, 0, type(uint256).max, 0);
+        for (uint256 i; i < numbers.length; ++i) {
+            uint8 n = numbers[i];
+            if (n == 0 || n > 36) return false;
+            for (uint256 j; j < i; ++j) {
+                if (numbers[j] == n) return false;
+            }
+            (uint256 row, uint256 col) = ((n - 1) / 3, (n - 1) % 3);
+            if (row < minRow) minRow = row;
+            if (row > maxRow) maxRow = row;
+            if (col < minCol) minCol = col;
+            if (col > maxCol) maxCol = col;
+        }
+        return maxRow - minRow + 1 == rows && maxCol - minCol + 1 == cols;
+    }
+
+    function _refCorner(uint8[] memory numbers) internal pure returns (bool) {
+        // First four: 0, 1, 2, 3 in any order
+        bool[4] memory seen;
+        bool firstFour = true;
+        for (uint256 i; i < 4; ++i) {
+            if (numbers[i] > 3 || seen[numbers[i]]) {
+                firstFour = false;
+                break;
+            }
+            seen[numbers[i]] = true;
+        }
+        return firstFour || _refBox(numbers, 2, 2);
+    }
+
+    function _absDiff(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a - b : b - a;
+    }
+
+    function _shuffle(uint8[] memory numbers, uint256 seed) internal pure {
+        for (uint256 i = numbers.length - 1; i > 0; --i) {
+            uint256 j = uint256(keccak256(abi.encode(seed, i))) % (i + 1);
+            (numbers[i], numbers[j]) = (numbers[j], numbers[i]);
+        }
+    }
+
+    function _numbers1(uint8 a) internal pure returns (uint8[] memory numbers) {
+        numbers = new uint8[](1);
+        numbers[0] = a;
+    }
+
+    function _numbers2(uint8 a, uint8 b) internal pure returns (uint8[] memory numbers) {
+        numbers = new uint8[](2);
+        (numbers[0], numbers[1]) = (a, b);
+    }
+
+    function _numbers3(uint8 a, uint8 b, uint8 c) internal pure returns (uint8[] memory numbers) {
+        numbers = new uint8[](3);
+        (numbers[0], numbers[1], numbers[2]) = (a, b, c);
+    }
+
+    function _numbers4(uint8 a, uint8 b, uint8 c, uint8 d) internal pure returns (uint8[] memory numbers) {
+        numbers = new uint8[](4);
+        (numbers[0], numbers[1], numbers[2], numbers[3]) = (a, b, c, d);
     }
 
     // ============ Fuzz Tests ============

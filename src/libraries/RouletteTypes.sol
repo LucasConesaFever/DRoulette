@@ -113,6 +113,12 @@ library RouletteTypes {
     uint40 internal constant COLUMN_2_MASK = 0x924924924;
     uint40 internal constant COLUMN_3_MASK = 0x1249249248;
 
+    // Inside bet shapes on the table layout (rows 1-2-3, 4-5-6, ..., 34-35-36), shifted to their lowest number
+    uint40 internal constant STREET_SHAPE = 0x7; // n, n+1, n+2
+    uint40 internal constant CORNER_SHAPE = 0x1b; // n, n+1, n+3, n+4
+    uint40 internal constant LINE_SHAPE = 0x3f; // n .. n+5
+    uint40 internal constant FIRST_FOUR_MASK = 0xf; // 0, 1, 2, 3 (corner)
+
     /*//////////////////////////////////////////////////////////////
                            INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -142,6 +148,7 @@ library RouletteTypes {
     }
 
     /// @notice Validate bet based on bet type and numbers provided
+    /// @dev Inside bets must be a real shape on the table, with distinct numbers in any order
     function validateBet(BetType betType, uint8[] memory numbers) internal pure returns (bool) {
         if (betType == BetType.STRAIGHT_UP) {
             return numbers.length == 1 && numbers[0] <= MAX_NUMBER;
@@ -149,15 +156,9 @@ library RouletteTypes {
         if (betType == BetType.SPLIT) {
             return numbers.length == 2 && isValidSplit(numbers[0], numbers[1]);
         }
-        if (betType == BetType.STREET) {
-            return numbers.length == 3 && isValidStreet(numbers);
-        }
-        if (betType == BetType.CORNER) {
-            return numbers.length == 4 && isValidCorner(numbers);
-        }
-        if (betType == BetType.LINE) {
-            return numbers.length == 6 && isValidLine(numbers);
-        }
+        if (betType == BetType.STREET) return isValidStreet(numbers);
+        if (betType == BetType.CORNER) return isValidCorner(numbers);
+        if (betType == BetType.LINE) return isValidLine(numbers);
         if (betType == BetType.DOZEN || betType == BetType.COLUMN) {
             return numbers.length == 1 && numbers[0] >= 1 && numbers[0] <= 3;
         }
@@ -171,37 +172,34 @@ library RouletteTypes {
         return false;
     }
 
-    /// @notice Check if two numbers form a valid split
+    /// @notice Check if two numbers form a valid split: neighbours in a row or a column, or 0 with 1, 2 or 3
     function isValidSplit(uint8 num1, uint8 num2) internal pure returns (bool) {
         if (num1 > MAX_NUMBER || num2 > MAX_NUMBER) return false;
-        uint256 diff = num1 > num2 ? num1 - num2 : num2 - num1;
-        return diff == 1 || diff == 3;
+        (uint8 low, uint8 high) = num1 < num2 ? (num1, num2) : (num2, num1);
+        if (low == 0) return high >= 1 && high <= 3;
+        // Same row (low is not the row's last number), or same column in the next row
+        return (high - low == 1 && low % 3 != 0) || high - low == 3;
     }
 
-    /// @notice Check if numbers form a valid street (three consecutive numbers in a row)
+    /// @notice Check if numbers form a valid street (the three numbers of one row)
     function isValidStreet(uint8[] memory numbers) internal pure returns (bool) {
-        if (numbers.length != 3) return false;
-        uint8 min = numbers[0];
-        uint8 max = numbers[0];
-        for (uint256 i = 1; i < 3; ++i) {
-            if (numbers[i] < min) min = numbers[i];
-            if (numbers[i] > max) max = numbers[i];
-        }
-        return (max - min == 2) && (min % 3 == 1);
+        (bool ok, uint40 mask, uint8 low) = _shape(numbers, 3);
+        return ok && low % 3 == 1 && mask == STREET_SHAPE << low;
     }
 
-    /// @notice Check if numbers form a valid corner (four numbers in a square)
+    /// @notice Check if numbers form a valid corner (four numbers in a square, or 0-1-2-3)
     function isValidCorner(uint8[] memory numbers) internal pure returns (bool) {
-        if (numbers.length != 4) return false;
-        // Implementation would check if they form a square on the table
-        return true; // Simplified for now
+        (bool ok, uint40 mask, uint8 low) = _shape(numbers, 4);
+        if (!ok) return false;
+        if (mask == FIRST_FOUR_MASK) return true;
+        // low in the first or second column, so low + 1 is in the same row
+        return low % 3 != 0 && mask == CORNER_SHAPE << low;
     }
 
-    /// @notice Check if numbers form a valid line (two consecutive rows)
+    /// @notice Check if numbers form a valid line (the six numbers of two consecutive rows)
     function isValidLine(uint8[] memory numbers) internal pure returns (bool) {
-        if (numbers.length != 6) return false;
-        // Implementation would check if they form two consecutive rows
-        return true; // Simplified for now
+        (bool ok, uint40 mask, uint8 low) = _shape(numbers, 6);
+        return ok && low % 3 == 1 && mask == LINE_SHAPE << low;
     }
 
     /**
@@ -231,6 +229,24 @@ library RouletteTypes {
             if (numbers[i] > MAX_NUMBER) revert RouletteTypes__NumberOutOfRange(numbers[i]);
             mask |= uint40(1) << numbers[i];
         }
+    }
+
+    /**
+     * @dev Mask and lowest number of `count` distinct numbers, each <= 36. ok is false otherwise.
+     *      A shape shifted past bit 36 can't match: its numbers would be above 36.
+     */
+    function _shape(uint8[] memory numbers, uint256 count) private pure returns (bool ok, uint40 mask, uint8 low) {
+        if (numbers.length != count) return (false, 0, 0);
+        low = type(uint8).max;
+        for (uint256 i; i < count; ++i) {
+            uint8 n = numbers[i];
+            if (n > MAX_NUMBER) return (false, 0, 0);
+            uint40 bit = uint40(1) << n;
+            if (mask & bit != 0) return (false, 0, 0); // duplicate
+            mask |= bit;
+            if (n < low) low = n;
+        }
+        ok = true;
     }
 
     /// @notice Check if a bet wins based on the winning number

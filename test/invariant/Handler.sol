@@ -194,8 +194,8 @@ contract Handler is Test {
             numbers[0] = n;
         } else if (betType == RouletteTypes.BetType.SPLIT) {
             numbers = new uint8[](2);
-            numbers[0] = n % 36 + 1;
-            numbers[1] = numbers[0] == 36 ? 35 : numbers[0] + 1;
+            numbers[0] = n % 33 + 1;
+            numbers[1] = numbers[0] + 3;
         } else if (betType == RouletteTypes.BetType.STREET) {
             numbers = new uint8[](3);
             uint8 first = uint8((numberSeed % 12) * 3 + 1);

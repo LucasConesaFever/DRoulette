@@ -140,7 +140,7 @@ contract RouletteTest is BaseTest {
         numbers[2] = 4;
         numbers[3] = 40;
         vm.prank(player1);
-        vm.expectRevert(abi.encodeWithSelector(RouletteTypes.RouletteTypes__NumberOutOfRange.selector, 40));
+        vm.expectRevert(Roulette.Roulette__InvalidNumbers.selector);
         roulette.placeBet(RouletteTypes.BetType.CORNER, numbers, 1e6);
     }
 
@@ -380,8 +380,8 @@ contract RouletteTest is BaseTest {
             numbers[0] = uint8(numberSeed % 37);
         } else if (betType == RouletteTypes.BetType.SPLIT) {
             numbers = new uint8[](2);
-            numbers[0] = uint8(numberSeed % 35) + 1;
-            numbers[1] = numbers[0] + 1;
+            numbers[0] = uint8(numberSeed % 33) + 1;
+            numbers[1] = numbers[0] + 3;
         } else if (betType == RouletteTypes.BetType.STREET) {
             numbers = new uint8[](3);
             uint8 first = uint8((numberSeed % 12) * 3 + 1);
