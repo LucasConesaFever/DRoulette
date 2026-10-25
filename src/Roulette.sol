@@ -82,9 +82,9 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     uint256 public totalCredits; // D6{credit} (= D6{USDC})
 
     // House statistics
-    uint256 public totalWagered; // D6{USDC} sum of settled stakes
-    uint256 public totalPaidOut; // D6{USDC} gross: stake + winnings
-    int256 public houseNetPnl; // signed D6{USDC} = -Σ netToPlayers
+    // One slot, written once per round. uint128 holds ~3.4e32 USDC.
+    uint128 public totalWagered; // D6{USDC} sum of settled stakes
+    uint128 public totalPaidOut; // D6{USDC} gross: stake + winnings
 
     mapping(uint256 => RouletteTypes.Round) private s_rounds;
     mapping(uint256 => RouletteTypes.Bet) private s_bets;
@@ -538,7 +538,14 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     /// @return paidOut D6{USDC} gross payouts
     /// @return netPnl signed D6{USDC} house net PnL
     function getHouseStats() external view returns (uint256 wagered, uint256 paidOut, int256 netPnl) {
-        return (totalWagered, totalPaidOut, houseNetPnl);
+        return (totalWagered, totalPaidOut, houseNetPnl());
+    }
+
+    /// @notice House net PnL, derived: settled stakes minus gross payouts (= -Σ netToPlayers)
+    /// @return signed D6{USDC}
+    function houseNetPnl() public view returns (int256) {
+        // signed D6{USDC} = D6{USDC} - D6{USDC}
+        return int256(uint256(totalWagered)) - int256(uint256(totalPaidOut));
     }
 
     /// @notice Get round details
@@ -666,9 +673,10 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
 
         // D6{credit} += D6{USDC} gross (1:1)
         totalCredits += totalPayout;
-        totalWagered += roundTotalBets; // D6{USDC} stakes
-        totalPaidOut += totalPayout; // D6{USDC} gross
-        houseNetPnl -= netToPlayers; // signed D6{USDC}
+        // forge-lint: disable-next-line(unsafe-typecast) round totals are uint128 (Round.totalBets, payout <= maxExposure)
+        totalWagered += uint128(roundTotalBets); // D6{USDC} stakes
+        // forge-lint: disable-next-line(unsafe-typecast) see above
+        totalPaidOut += uint128(totalPayout); // D6{USDC} gross
 
         round.winningNumber = winningNumber;
         round.winningColor = winningColor;
