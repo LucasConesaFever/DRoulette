@@ -626,7 +626,8 @@ body {
 /* Number Grid */
 .number-grid {
   display: grid;
-  grid-template-columns: repeat(12, 1fr);
+  /* 0 on the left spanning the three rows, then the 12 columns of the table */
+  grid-template-columns: 0.8fr repeat(12, 1fr);
   gap: 4px;
   margin: 20px 0;
 }
@@ -657,7 +658,7 @@ body {
 
 .number-btn.green {
   background: #00b894;
-  grid-column: span 12;
+  grid-row: span 3;
   aspect-ratio: auto;
   padding: 8px;
 }

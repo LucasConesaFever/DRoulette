@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { useAccount, useConnect, useDisconnect, useReadContract, useReadContracts, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { BaseError, formatUnits, parseUnits } from 'viem';
+import { useAccount, useBlock, useConnect, useDisconnect, usePublicClient, useReadContract, useReadContracts, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { BaseError, ContractFunctionRevertedError, formatUnits, parseUnits } from 'viem';
 import { CONTRACTS, BetType, BET_TYPE_LABELS, PAYOUT_MULTIPLIERS, INSIDE_BET_SIZES, getNumberColor, maskToNumbers, formatUSDC, parseUSDC } from './config';
 import { ERC20_ABI, VAULT_ABI, ROULETTE_ABI, VRF_COORDINATOR_ABI } from './abis';
 
@@ -13,6 +13,39 @@ const STATE_LABELS = ['Open', 'Spinning', 'Deficit'];
 const STATE_OPEN = 0;
 const STATE_CALCULATING = 1;
 const STATE_DEFICIT = 2;
+
+// Readable messages for the contracts' custom errors; anything else shows its name
+const ERROR_MESSAGES: Record<string, string> = {
+  Roulette__ExposureLimitExceeded: 'Bet too large: the round would exceed what the vault can cover (exposure limit)',
+  Roulette__InsufficientCredits: 'Not enough credits',
+  Roulette__InvalidBetAmount: 'Amount outside the bet limits',
+  Roulette__InvalidNumbers: 'These numbers are not a valid bet of this type on the table',
+  Roulette__InvalidAmount: 'Invalid amount',
+  Roulette__RouletteNotOpen: 'Betting is closed (spin pending or deficit open)',
+  Roulette__RoundFull: 'This round is full, wait for the next one',
+  Roulette__NoActiveBets: 'No bets in this round yet',
+  Roulette__SpinDelayNotMet: 'Too soon since the last spin',
+  Roulette__AlreadyCalculating: 'A spin is already pending',
+  Roulette__VrfTimeoutNotReached: 'The VRF timeout has not passed yet',
+  RouletteTypes__NumberOutOfRange: 'Numbers must be between 0 and 36',
+  EnforcedPause: 'Betting is paused',
+  ERC4626ExceededMaxDeposit: 'Deposit exceeds what the vault accepts (capacity, or LP actions locked)',
+  ERC4626ExceededMaxRedeem: 'More shares than you can redeem now (balance, reserve, or LP actions locked)',
+  ERC20InsufficientBalance: 'Not enough USDC',
+};
+
+function describeError(error: unknown): string {
+  if (error instanceof BaseError) {
+    const revert = error.walk(e => e instanceof ContractFunctionRevertedError);
+    if (revert instanceof ContractFunctionRevertedError && revert.data?.errorName) {
+      const { errorName, args } = revert.data;
+      const remaining = errorName.endsWith('NotMet') || errorName.endsWith('NotReached') ? ` (${args?.[0]}s left)` : '';
+      return (ERROR_MESSAGES[errorName] ?? errorName) + remaining;
+    }
+    return error.shortMessage;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
 
 // Roulette Wheel Component
 function RouletteWheel({ winningNumber, isSpinning }: { winningNumber: number | null; isSpinning: boolean }) {
@@ -28,12 +61,14 @@ function RouletteWheel({ winningNumber, isSpinning }: { winningNumber: number | 
       }, 50);
       return () => clearInterval(interval);
     } else if (winningNumber !== null) {
-      // Calculate final position based on winning number
+      // Slot i is drawn at i * anglePerSlot clockwise from the top, so a wheel rotation of
+      // -i * anglePerSlot (mod 360) puts it under the pointer. Keep turning forward to get there.
       const numberIndex = WHEEL_NUMBERS.indexOf(winningNumber);
       const anglePerSlot = 360 / WHEEL_NUMBERS.length;
-      const targetRotation = numberIndex * anglePerSlot + 90; // +90 to align with top
-      setRotation(targetRotation);
-      setBallRotation(-targetRotation - 180);
+      const mod = (a: number) => ((a % 360) + 360) % 360;
+      setRotation(r => r + 360 + mod(-numberIndex * anglePerSlot - r));
+      // The ball turns the other way and stops at the top, under the pointer
+      setBallRotation(b => b - 360 - mod(b));
     }
   }, [isSpinning, winningNumber]);
 
@@ -96,7 +131,26 @@ function App() {
 
   // Write contract hooks
   const { writeContract, writeContractAsync, data: txHash, isPending: isWriting, error: writeError, reset: resetWrite } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash: txHash });
+  const { data: receipt, isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash: txHash });
+  const isReverted = receipt?.status === 'reverted';
+  const publicClient = usePublicClient();
+  const [simulationError, setSimulationError] = useState<string | null>(null);
+
+  // Simulate first so a revert shows the contract's error instead of sending a failing transaction
+  const send = async (params: Parameters<typeof writeContract>[0]) => {
+    setSimulationError(null);
+    resetWrite();
+    try {
+      await publicClient!.simulateContract({ ...params, account: address } as Parameters<NonNullable<typeof publicClient>['simulateContract']>[0]);
+    } catch (error) {
+      setSimulationError(describeError(error));
+      return;
+    }
+    writeContract(params);
+  };
+
+  // Chain time, not the browser clock, decides when a stuck spin can be refunded
+  const { data: latestBlock } = useBlock({ watch: true });
   const [isApproving, setIsApproving] = useState(false);
 
   // Polling interval for real-time updates (2 seconds)
@@ -344,7 +398,8 @@ function App() {
     if (isConfirmed) {
       // Immediate refetch after transaction
       refetchAll();
-      // Reset write state after a short delay
+      // Reset write state after a short delay; a revert stays on screen
+      if (isReverted) return;
       const timeout = setTimeout(() => {
         resetWrite();
       }, 3000);
@@ -380,24 +435,35 @@ function App() {
   };
 
   // Actions
+  // Parse a USDC amount from an input, showing the problem instead of sending a wrong amount
+  const parseAmount = (value: string): bigint | null => {
+    try {
+      return parseUSDC(value);
+    } catch (error) {
+      setSimulationError(describeError(error));
+      return null;
+    }
+  };
+
   // Approve `spender` (Roulette for credits, Vault for LP deposits) if its allowance is too low
   const approveIfNeeded = async (spender: 'roulette' | 'vault', amount: bigint): Promise<boolean> => {
     const allowance = spender === 'roulette' ? usdcAllowanceRoulette : usdcAllowanceVault;
     if (!allowance || allowance < amount) {
       setIsApproving(true);
       try {
-        await writeContractAsync({
+        const hash = await writeContractAsync({
           address: CONTRACTS.USDC,
           abi: ERC20_ABI,
           functionName: 'approve',
           args: [spender === 'roulette' ? CONTRACTS.ROULETTE : CONTRACTS.VAULT, parseUnits('1000000000', 6)],
         });
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // The deposit is simulated next, so the approval must be mined first
+        await publicClient!.waitForTransactionReceipt({ hash });
         await (spender === 'roulette' ? refetchAllowanceRoulette() : refetchAllowanceVault());
         setIsApproving(false);
         return true;
       } catch (error) {
-        console.error('Approval failed:', error);
+        setSimulationError(describeError(error));
         setIsApproving(false);
         return false;
       }
@@ -407,10 +473,11 @@ function App() {
 
   const handleDepositCredits = async () => {
     if (!depositAmount) return;
-    const amount = parseUSDC(depositAmount);
+    const amount = parseAmount(depositAmount);
+    if (amount === null) return;
     const approved = await approveIfNeeded('roulette', amount);
     if (!approved) return;
-    writeContract({
+    send({
       address: CONTRACTS.ROULETTE,
       abi: ROULETTE_ABI,
       functionName: 'depositCredits',
@@ -420,20 +487,23 @@ function App() {
 
   const handleWithdrawCredits = () => {
     if (!withdrawAmount) return;
-    writeContract({
+    const amount = parseAmount(withdrawAmount);
+    if (amount === null) return;
+    send({
       address: CONTRACTS.ROULETTE,
       abi: ROULETTE_ABI,
       functionName: 'withdrawCredits',
-      args: [parseUSDC(withdrawAmount)],
+      args: [amount],
     });
   };
 
   const handleLpDeposit = async () => {
     if (!lpDepositAmount) return;
-    const amount = parseUSDC(lpDepositAmount);
+    const amount = parseAmount(lpDepositAmount);
+    if (amount === null) return;
     const approved = await approveIfNeeded('vault', amount);
     if (!approved) return;
-    writeContract({
+    send({
       address: CONTRACTS.VAULT,
       abi: VAULT_ABI,
       functionName: 'deposit',
@@ -443,7 +513,7 @@ function App() {
 
   const handleLpWithdraw = () => {
     if (!lpWithdrawShares) return;
-    writeContract({
+    send({
       address: CONTRACTS.VAULT,
       abi: VAULT_ABI,
       functionName: 'redeem',
@@ -452,10 +522,10 @@ function App() {
   };
 
   // Numbers typed or picked on the grid (inside bets), or the dozen/column selector
-  const selectedNumbers = betNumbers
-    .split(',')
-    .map(n => parseInt(n.trim()))
-    .filter(n => !isNaN(n) && n >= 0 && n <= 36);
+  const numberTokens = betNumbers.split(',').map(n => n.trim()).filter(n => n !== '');
+  const selectedNumbers = numberTokens.filter(n => /^\d+$/.test(n)).map(Number).filter(n => n <= 36);
+  // Every token a whole number 0-36, no duplicates
+  const numbersValid = selectedNumbers.length === numberTokens.length && new Set(selectedNumbers).size === selectedNumbers.length;
   const insideSize = INSIDE_BET_SIZES[betType];
 
   const handleBetTypeChange = (newType: BetType) => {
@@ -478,21 +548,23 @@ function App() {
   };
 
   // Count check only: the contract checks the table shape (neighbours, rows, squares)
-  const betNumbersReady = betType > BetType.COLUMN || selectedNumbers.length === (insideSize ?? 1);
+  const betNumbersReady = betType > BetType.COLUMN || (numbersValid && selectedNumbers.length === (insideSize ?? 1));
 
   const handlePlaceBet = () => {
     if (!betAmount || !betNumbersReady) return;
+    const amount = parseAmount(betAmount);
+    if (amount === null) return;
     const numbers = betType <= BetType.COLUMN ? selectedNumbers : [];
-    writeContract({
+    send({
       address: CONTRACTS.ROULETTE,
       abi: ROULETTE_ABI,
       functionName: 'placeBet',
-      args: [betType, numbers, parseUSDC(betAmount)],
+      args: [betType, numbers, amount],
     });
   };
 
   const handleSpin = () => {
-    writeContract({
+    send({
       address: CONTRACTS.ROULETTE,
       abi: ROULETTE_ABI,
       functionName: 'spin',
@@ -507,7 +579,7 @@ function App() {
       console.error('No pending VRF request');
       return;
     }
-    writeContract({
+    send({
       address: CONTRACTS.VRF_COORDINATOR,
       abi: VRF_COORDINATOR_ABI,
       functionName: 'fulfillRandomWords',
@@ -517,7 +589,7 @@ function App() {
 
   // Owner only while a VRF request is pending, once vrfTimeout has passed; re-credits every stake
   const handleRefundRound = () => {
-    writeContract({
+    send({
       address: CONTRACTS.ROULETTE,
       abi: ROULETTE_ABI,
       functionName: 'refundRound',
@@ -526,7 +598,7 @@ function App() {
   };
 
   const handleTogglePause = () => {
-    writeContract({
+    send({
       address: CONTRACTS.ROULETTE,
       abi: ROULETTE_ABI,
       functionName: isPaused ? 'unpause' : 'pause',
@@ -536,7 +608,7 @@ function App() {
 
   // Permissionless: pulls whatever the vault can pay towards the open deficit
   const handleCoverDeficit = () => {
-    writeContract({
+    send({
       address: CONTRACTS.ROULETTE,
       abi: ROULETTE_ABI,
       functionName: 'coverDeficit',
@@ -546,11 +618,13 @@ function App() {
 
   const handleFaucet = () => {
     if (!faucetAmount) return;
-    writeContract({
+    const amount = parseAmount(faucetAmount);
+    if (amount === null) return;
+    send({
       address: CONTRACTS.USDC,
       abi: ERC20_ABI,
       functionName: 'faucet',
-      args: [parseUSDC(faucetAmount)],
+      args: [amount],
     });
   };
 
@@ -561,10 +635,10 @@ function App() {
   const refundAvailableAt = spinRequestedAt !== undefined && vrfTimeout !== undefined
     ? Number(spinRequestedAt) + Number(vrfTimeout)
     : undefined;
-  const canRefund = isSpinning && refundAvailableAt !== undefined && Date.now() / 1000 >= refundAvailableAt;
-  const writeErrorMessage = writeError
-    ? (writeError instanceof BaseError ? writeError.shortMessage : writeError.message)
-    : undefined;
+  const canRefund = isSpinning && refundAvailableAt !== undefined && latestBlock !== undefined
+    && Number(latestBlock.timestamp) >= refundAvailableAt;
+  const txErrorMessage = simulationError
+    ?? (writeError ? describeError(writeError) : isReverted ? 'Transaction reverted' : null);
 
   const describeBet = (bet: { betType: number; numbersMask: number }) => {
     const type = bet.betType as BetType;
@@ -866,7 +940,8 @@ function App() {
                   >
                     0
                   </button>
-                  {Array.from({ length: 36 }, (_, i) => i + 1).map(num => (
+                  {/* Table layout: rows 3-6-...-36, 2-5-...-35, 1-4-...-34, so neighbours on the table are neighbours here */}
+                  {[3, 2, 1].flatMap(row => Array.from({ length: 12 }, (_, col) => col * 3 + row)).map(num => (
                     <button
                       key={num}
                       className={`number-btn ${getNumberColor(num)} ${insideSize && selectedNumbers.includes(num) ? 'selected' : ''}`}
@@ -1101,12 +1176,14 @@ function App() {
       )}
 
       {/* Transaction Status */}
-      {(isWriting || isConfirming || writeError) && (
+      {(isWriting || isConfirming || isConfirmed || txErrorMessage) && (
         <div className="tx-status">
           {isWriting && <span className="pending">Sending transaction...</span>}
           {isConfirming && <span className="confirming">Confirming...</span>}
-          {isConfirmed && <span className="confirmed">Transaction confirmed!</span>}
-          {writeError && <span className="error">{writeErrorMessage}</span>}
+          {isConfirmed && !isReverted && <span className="confirmed">Transaction confirmed!</span>}
+          {txErrorMessage && (
+            <span className="error" onClick={() => setSimulationError(null)}>{txErrorMessage}</span>
+          )}
         </div>
       )}
 

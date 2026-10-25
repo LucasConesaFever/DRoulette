@@ -1,3 +1,5 @@
+import { parseUnits } from 'viem';
+
 // Contract addresses deployed to Anvil.
 // Update after redeploying (script/deploy-local.sh prints them): the refactored contracts
 // cannot be reused with an old deployment, since vault.setRoulette can only be called once.
@@ -87,7 +89,9 @@ export function formatUSDC(amount: bigint): string {
 }
 
 // Parse USDC amount to bigint
+// Exact decimal parsing (no float rounding); throws on anything but a plain amount with <= 6 decimals
 export function parseUSDC(amount: string): bigint {
-  const value = parseFloat(amount) * 1e6;
-  return BigInt(Math.floor(value));
+  const value = amount.trim();
+  if (!/^\d+(\.\d{1,6})?$/.test(value)) throw new Error('Enter a USDC amount with at most 6 decimals');
+  return parseUnits(value, 6);
 }
