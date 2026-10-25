@@ -21,7 +21,7 @@ import {IRouletteLiquidity} from "src/interfaces/IRouletteLiquidity.sol";
  *
  *      LP deposits/withdrawals are blocked while Roulette reports `lpLocked()` (spin pending or
  *      deficit open), and withdrawals can't take the vault below Roulette's `reservedLiquidity()`.
- * @custom:security-contact TODO
+ * @custom:security-contact https://github.com/LucasConesaFever/DRoulette/issues
  */
 contract RouletteVault is ERC4626, Ownable2Step, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;

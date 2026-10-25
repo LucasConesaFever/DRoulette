@@ -1,0 +1,15 @@
+# Mutation testing with mewt (https://github.com/trailofbits/mewt): `mewt run`, then `mewt results`
+db = "mewt.sqlite"
+
+[log]
+level = "info"
+
+[targets]
+include = ["src/**/*.sol"]
+ignore = ["mocks"]
+
+[test]
+# Reduced fuzz/invariant runs and no gas benchmark keep each mutant fast (recompile dominates).
+# Survivors can be re-tested with the full suite: mewt test --ids ... --test.cmd "forge test"
+cmd = "FOUNDRY_INVARIANT_RUNS=32 FOUNDRY_INVARIANT_DEPTH=100 FOUNDRY_FUZZ_RUNS=64 forge test --fail-fast --no-match-path test/gas/*"
+timeout = 60

@@ -21,7 +21,7 @@ import {RouletteTypes} from "src/libraries/RouletteTypes.sol";
  *      the house's winnings to the vault, or pulls the players' winnings from it.
  *      Implements European roulette (0-36) with Chainlink VRF V2.5.
  *      Owner functionality (two-step transfer) comes from VRFConsumerBaseV2Plus.
- * @custom:security-contact TODO
+ * @custom:security-contact https://github.com/LucasConesaFever/DRoulette/issues
  */
 contract Roulette is ReentrancyGuardTransient, Pausable, VRFConsumerBaseV2Plus, IRouletteLiquidity {
     using SafeERC20 for IERC20;

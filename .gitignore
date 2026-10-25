@@ -20,3 +20,9 @@ crytic-export/
 
 # Frontend dependencies (npm install)
 frontend/node_modules/
+
+# mewt mutation testing results
+mewt.sqlite
+
+# Logs (anvil, deployments)
+*.log
