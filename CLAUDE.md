@@ -11,7 +11,7 @@ DWheel is a decentralized on-chain casino roulette protocol combining gaming wit
 ## Build & Test Commands
 
 ```bash
-# First checkout: fetch forge-std, openzeppelin-contracts and chainlink-brownie-contracts
+# First checkout: fetch forge-std, openzeppelin-contracts, chainlink-brownie-contracts and foundry-devops
 git submodule update --init
 
 # Build contracts

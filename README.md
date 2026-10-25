@@ -86,7 +86,7 @@ Requires [Foundry](https://book.getfoundry.sh/getting-started/installation) and 
 ```bash
 git clone https://github.com/LucasConesaFever/DRoulette.git
 cd DRoulette
-git submodule update --init   # forge-std, openzeppelin-contracts, chainlink-brownie-contracts
+git submodule update --init   # forge-std, openzeppelin-contracts, chainlink-brownie-contracts, foundry-devops
 forge build
 forge test
 ```
