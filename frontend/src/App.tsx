@@ -511,12 +511,30 @@ function App() {
   const myLastBets = myBets(lastRoundBetIds, currentRoundBetIds?.length ?? 0);
   const lastRoundSettled = !!lastRound && lastRound.completed && !lastRound.refunded;
 
-  // Update last winning number when round data changes. A refunded round has no winning number.
+  // The wheel shows the newest round that settled: a refunded round has no winning number, so look
+  // back a few rounds past any refunds
+  const RESULT_LOOKBACK = 8;
+  const recentRoundIds = currentRoundId
+    ? Array.from({ length: RESULT_LOOKBACK }, (_, i) => currentRoundId - 1n - BigInt(i)).filter(id => id > 0n)
+    : [];
+  const { data: recentRounds, refetch: refetchRecentRounds } = useReadContracts({
+    contracts: recentRoundIds.map(id => ({
+      address: CONTRACTS.ROULETTE,
+      abi: ROULETTE_ABI,
+      functionName: 'getRound' as const,
+      args: [id] as const,
+    })),
+    query: { enabled: recentRoundIds.length > 0, refetchInterval: POLL_INTERVAL },
+  });
+  const lastSettledIndex = recentRounds?.findIndex(r => r.result?.completed && !r.result.refunded) ?? -1;
+  const lastSettledRound = lastSettledIndex >= 0 ? recentRounds?.[lastSettledIndex].result : undefined;
+  const lastSettledRoundId = lastSettledIndex >= 0 ? recentRoundIds[lastSettledIndex] : undefined;
+
   useEffect(() => {
-    if (lastRoundSettled) {
-      setLastWinningNumber(lastRound.winningNumber);
+    if (lastSettledRound) {
+      setLastWinningNumber(lastSettledRound.winningNumber);
     }
-  }, [lastRound]);
+  }, [lastSettledRoundId, lastSettledRound?.winningNumber]);
 
   // Auto-refetch all data when transaction is confirmed
   useEffect(() => {
@@ -551,6 +569,7 @@ function App() {
     refetchPlayerStats();
     refetchPreviewRedeem();
     refetchLastRound();
+    refetchRecentRounds();
     refetchPendingRequestId();
     refetchPaused();
     refetchSpinRequestedAt();
@@ -899,7 +918,8 @@ function App() {
               <p className="round-line">{roundLine}</p>
               {lastWinningNumber !== null && !isSpinning && (
                 <p className="last-result">
-                  Last result <strong className={`number-badge ${getNumberColor(lastWinningNumber)}`}>{lastWinningNumber}</strong>{' '}
+                  {lastSettledRoundId !== undefined ? `Round ${lastSettledRoundId} landed on` : 'Last result'}{' '}
+                  <strong className={`number-badge ${getNumberColor(lastWinningNumber)}`}>{lastWinningNumber}</strong>{' '}
                   {describeNumber(lastWinningNumber)}
                 </p>
               )}
