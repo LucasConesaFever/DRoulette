@@ -831,10 +831,49 @@ contract RouletteTest is BaseTest {
         roulette.refundRound();
     }
 
-    function test_RefundRound_RevertWhen_NotOwner() public {
+    /// @dev With a VRF request pending, a player could refund a round after seeing its late answer
+    function test_RefundRound_RevertWhen_NotOwnerAndSpinPending() public {
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        _spin();
+        vm.warp(block.timestamp + VRF_TIMEOUT);
+
         vm.prank(player1);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
         roulette.refundRound();
+    }
+
+    /// @dev After an emergency stop no VRF answer can arrive, so anyone can unlock the round after the timeout
+    function test_RefundRound_AnyoneAfterEmergencyStop() public {
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        vm.prank(owner);
+        roulette.emergencyStopBetting();
+        assertTrue(vault.isLpLocked());
+
+        vm.warp(block.timestamp + VRF_TIMEOUT - 1);
+        vm.prank(lp1);
+        vm.expectRevert(abi.encodeWithSelector(Roulette.Roulette__VrfTimeoutNotReached.selector, 1));
+        roulette.refundRound();
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(lp1);
+        roulette.refundRound();
+        assertFalse(vault.isLpLocked());
+        assertEq(roulette.credits(player1), 10e6);
+        assertEq(uint8(roulette.state()), uint8(RouletteTypes.RouletteState.OPEN));
+    }
+
+    /// @dev Stopping again while CALCULATING would restart the refund clock and keep the round locked
+    function test_EmergencyStop_RevertWhen_Calculating() public {
+        _fundCredits(player1, 10e6);
+        _betRed(player1, 1e6);
+        _spin();
+
+        vm.startPrank(owner);
+        vm.expectRevert(Roulette.Roulette__AlreadyCalculating.selector);
+        roulette.emergencyStopBetting();
+        vm.stopPrank();
     }
 
     /*//////////////////////////////////////////////////////////////

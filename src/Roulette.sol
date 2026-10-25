@@ -323,18 +323,22 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     }
 
     /**
-     * @notice Refund the current round when Chainlink VRF never answered
+     * @notice Refund the current round when Chainlink VRF never answered, or betting was stopped
      * @dev Re-credits every stake and rolls back the bets' stats. A late VRF answer for the
      *      refunded round reverts with InvalidRequestId.
+     *      With a VRF request pending only the owner can refund: anyone else could see a late answer
+     *      in the mempool and cancel a round they lost. After an emergency stop no answer can come,
+     *      so anyone can refund once vrfTimeout has passed and the owner can't keep LPs locked.
      */
-    function refundRound() external nonReentrant onlyOwner {
+    function refundRound() external nonReentrant {
         if (state != RouletteTypes.RouletteState.CALCULATING) revert Roulette__NotCalculating();
+        uint256 roundId = currentRoundId;
+        RouletteTypes.Round storage round = s_rounds[roundId];
+        if (round.requestId != 0) _checkOwner();
+
         // {s} = {s} - {s}
         uint256 elapsed = block.timestamp - spinRequestedAt;
         if (elapsed < vrfTimeout) revert Roulette__VrfTimeoutNotReached(vrfTimeout - elapsed);
-
-        uint256 roundId = currentRoundId;
-        RouletteTypes.Round storage round = s_rounds[roundId];
 
         uint256 lastBetId = round.lastBetId;
         for (uint256 betId = round.firstBetId; betId != 0 && betId <= lastBetId; ++betId) {
@@ -404,10 +408,12 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
 
     /**
      * @notice Emergency function to force state to CALCULATING (stops betting)
-     * @dev Restarts the refund clock, so refundRound can't use the previous spin's timestamp
+     * @dev Starts the refund clock, so refundRound can't use the previous spin's timestamp.
+     *      Only from OPEN: calling it again while CALCULATING would push a pending refund back forever.
      */
     function emergencyStopBetting() external onlyOwner {
         if (state == RouletteTypes.RouletteState.DEFICIT) revert Roulette__DeficitOpen();
+        if (state == RouletteTypes.RouletteState.CALCULATING) revert Roulette__AlreadyCalculating();
         spinRequestedAt = block.timestamp;
         _setState(RouletteTypes.RouletteState.CALCULATING);
     }
