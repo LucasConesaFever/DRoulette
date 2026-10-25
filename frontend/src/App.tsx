@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useAccount, useConnect, useDisconnect, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { formatUnits, parseUnits } from 'viem';
-import { CONTRACTS, BetType, BET_TYPE_LABELS, getNumberColor, formatUSDC, parseUSDC } from './config';
+import { useAccount, useConnect, useDisconnect, useReadContract, useReadContracts, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { BaseError, formatUnits, parseUnits } from 'viem';
+import { CONTRACTS, BetType, BET_TYPE_LABELS, PAYOUT_MULTIPLIERS, INSIDE_BET_SIZES, getNumberColor, maskToNumbers, formatUSDC, parseUSDC } from './config';
 import { ERC20_ABI, VAULT_ABI, ROULETTE_ABI, VRF_COORDINATOR_ABI } from './abis';
 
 // Roulette wheel numbers in order (European)
@@ -274,9 +274,67 @@ function App() {
     query: { refetchInterval: POLL_INTERVAL },
   });
 
-  // Update last winning number when round data changes
+  const { data: isPaused, refetch: refetchPaused } = useReadContract({
+    address: CONTRACTS.ROULETTE,
+    abi: ROULETTE_ABI,
+    functionName: 'paused',
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  // Refund window: the owner can refund a spin VRF hasn't answered after vrfTimeout
+  const { data: spinRequestedAt, refetch: refetchSpinRequestedAt } = useReadContract({
+    address: CONTRACTS.ROULETTE,
+    abi: ROULETTE_ABI,
+    functionName: 'spinRequestedAt',
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  const { data: vrfTimeout } = useReadContract({
+    address: CONTRACTS.ROULETTE,
+    abi: ROULETTE_ABI,
+    functionName: 'vrfTimeout',
+  });
+
+  // Bets of the open round and of the last round, to show the player's own
+  const lastRoundId = currentRoundId && currentRoundId > 1n ? currentRoundId - 1n : undefined;
+  const { data: currentRoundBetIds, refetch: refetchCurrentRoundBetIds } = useReadContract({
+    address: CONTRACTS.ROULETTE,
+    abi: ROULETTE_ABI,
+    functionName: 'getRoundBets',
+    args: currentRoundId ? [currentRoundId] : undefined,
+    query: { refetchInterval: POLL_INTERVAL },
+  });
+
+  const { data: lastRoundBetIds, refetch: refetchLastRoundBetIds } = useReadContract({
+    address: CONTRACTS.ROULETTE,
+    abi: ROULETTE_ABI,
+    functionName: 'getRoundBets',
+    args: lastRoundId ? [lastRoundId] : undefined,
+  });
+
+  const betIds = [...(currentRoundBetIds ?? []), ...(lastRoundBetIds ?? [])];
+  const { data: betsData, refetch: refetchBets } = useReadContracts({
+    contracts: betIds.map(id => ({
+      address: CONTRACTS.ROULETTE,
+      abi: ROULETTE_ABI,
+      functionName: 'getBet' as const,
+      args: [id] as const,
+    })),
+    query: { enabled: betIds.length > 0 },
+  });
+
+  const myBets = (ids: readonly bigint[] | undefined, offset: number) =>
+    (ids ?? []).flatMap((id, i) => {
+      const bet = betsData?.[offset + i]?.result;
+      return bet && address && bet.player.toLowerCase() === address.toLowerCase() ? [{ id, ...bet }] : [];
+    });
+  const myCurrentBets = myBets(currentRoundBetIds, 0);
+  const myLastBets = myBets(lastRoundBetIds, currentRoundBetIds?.length ?? 0);
+  const lastRoundSettled = !!lastRound && lastRound.completed && !lastRound.refunded;
+
+  // Update last winning number when round data changes. A refunded round has no winning number.
   useEffect(() => {
-    if (lastRound && lastRound.completed) {
+    if (lastRoundSettled) {
       setLastWinningNumber(lastRound.winningNumber);
     }
   }, [lastRound]);
@@ -314,6 +372,11 @@ function App() {
     refetchPreviewRedeem();
     refetchLastRound();
     refetchPendingRequestId();
+    refetchPaused();
+    refetchSpinRequestedAt();
+    refetchCurrentRoundBetIds();
+    refetchLastRoundBetIds();
+    refetchBets();
   };
 
   // Actions
@@ -388,16 +451,38 @@ function App() {
     });
   };
 
-  const handlePlaceBet = () => {
-    if (!betAmount) return;
-    let numbers: number[] = [];
-    if (betType <= BetType.COLUMN) {
-      numbers = betNumbers
-        .split(',')
-        .map(n => parseInt(n.trim()))
-        .filter(n => !isNaN(n) && n >= 0 && n <= 36);
+  // Numbers typed or picked on the grid (inside bets), or the dozen/column selector
+  const selectedNumbers = betNumbers
+    .split(',')
+    .map(n => parseInt(n.trim()))
+    .filter(n => !isNaN(n) && n >= 0 && n <= 36);
+  const insideSize = INSIDE_BET_SIZES[betType];
+
+  const handleBetTypeChange = (newType: BetType) => {
+    setBetType(newType);
+    // Dozen and column default to the first selector, everything else starts empty
+    setBetNumbers(newType === BetType.DOZEN || newType === BetType.COLUMN ? '1' : '');
+  };
+
+  // Grid click: toggles the number for multi-number inside bets, otherwise starts a straight bet
+  const handleNumberClick = (num: number) => {
+    if (insideSize && insideSize > 1) {
+      const next = selectedNumbers.includes(num)
+        ? selectedNumbers.filter(n => n !== num)
+        : [...selectedNumbers, num].slice(-insideSize);
+      setBetNumbers(next.join(','));
+    } else {
+      setBetType(BetType.STRAIGHT_UP);
+      setBetNumbers(num.toString());
     }
-    console.log('Placing bet:', { betType, numbers, amount: parseUSDC(betAmount).toString() });
+  };
+
+  // Count check only: the contract checks the table shape (neighbours, rows, squares)
+  const betNumbersReady = betType > BetType.COLUMN || selectedNumbers.length === (insideSize ?? 1);
+
+  const handlePlaceBet = () => {
+    if (!betAmount || !betNumbersReady) return;
+    const numbers = betType <= BetType.COLUMN ? selectedNumbers : [];
     writeContract({
       address: CONTRACTS.ROULETTE,
       abi: ROULETTE_ABI,
@@ -430,6 +515,25 @@ function App() {
     });
   };
 
+  // Owner only while a VRF request is pending, once vrfTimeout has passed; re-credits every stake
+  const handleRefundRound = () => {
+    writeContract({
+      address: CONTRACTS.ROULETTE,
+      abi: ROULETTE_ABI,
+      functionName: 'refundRound',
+      args: [],
+    });
+  };
+
+  const handleTogglePause = () => {
+    writeContract({
+      address: CONTRACTS.ROULETTE,
+      abi: ROULETTE_ABI,
+      functionName: isPaused ? 'unpause' : 'pause',
+      args: [],
+    });
+  };
+
   // Permissionless: pulls whatever the vault can pay towards the open deficit
   const handleCoverDeficit = () => {
     writeContract({
@@ -454,6 +558,24 @@ function App() {
   const isSpinning = gameState === STATE_CALCULATING;
   const isDeficit = gameState === STATE_DEFICIT;
   const [houseWagered, housePaidOut, houseNetPnl] = houseStats ?? [0n, 0n, 0n];
+  const refundAvailableAt = spinRequestedAt !== undefined && vrfTimeout !== undefined
+    ? Number(spinRequestedAt) + Number(vrfTimeout)
+    : undefined;
+  const canRefund = isSpinning && refundAvailableAt !== undefined && Date.now() / 1000 >= refundAvailableAt;
+  const writeErrorMessage = writeError
+    ? (writeError instanceof BaseError ? writeError.shortMessage : writeError.message)
+    : undefined;
+
+  const describeBet = (bet: { betType: number; numbersMask: number }) => {
+    const type = bet.betType as BetType;
+    const label = BET_TYPE_LABELS[type].replace(/ \(.*\)$/, '');
+    if (type <= BetType.LINE) return `${label} ${maskToNumbers(bet.numbersMask).join('-')}`;
+    if (type === BetType.DOZEN || type === BetType.COLUMN) {
+      const first = maskToNumbers(bet.numbersMask)[0];
+      return `${label} ${type === BetType.DOZEN ? Math.ceil(first / 12) : ((first - 1) % 3) + 1}`;
+    }
+    return label;
+  };
 
   return (
     <div className="app">
@@ -570,9 +692,24 @@ function App() {
                     >
                       Fulfill VRF (Anvil Only)
                     </button>
+                    <button
+                      className="btn-secondary"
+                      onClick={handleRefundRound}
+                      disabled={isWriting || !canRefund}
+                      title={refundAvailableAt ? `Available after ${new Date(refundAvailableAt * 1000).toLocaleTimeString()}` : undefined}
+                    >
+                      Refund Round
+                    </button>
                   </>
                 )}
+                <button className="btn-secondary" onClick={handleTogglePause} disabled={isWriting}>
+                  {isPaused ? 'Unpause Betting' : 'Pause Betting'}
+                </button>
               </div>
+            )}
+
+            {isPaused && (
+              <p className="info-text">Betting is paused by the owner. Credits can still be withdrawn.</p>
             )}
 
             {/* Non-owner sees spinning status */}
@@ -659,13 +796,7 @@ function App() {
                     <label>Bet Type</label>
                     <select
                       value={betType.toString()}
-                      onChange={(e) => {
-                        const newType = Number(e.target.value);
-                        setBetType(newType);
-                        if (newType >= BetType.RED) {
-                          setBetNumbers('');
-                        }
-                      }}
+                      onChange={(e) => handleBetTypeChange(Number(e.target.value))}
                     >
                       {Object.entries(BET_TYPE_LABELS).map(([value, label]) => (
                         <option key={value} value={value}>{label}</option>
@@ -673,15 +804,38 @@ function App() {
                     </select>
                   </div>
 
-                  {betType === BetType.STRAIGHT_UP && (
+                  {insideSize !== undefined && (
                     <div className="form-group">
-                      <label>Numbers (0-36)</label>
+                      <label>
+                        {insideSize === 1 ? 'Number (0-36)' : `Numbers (${selectedNumbers.length}/${insideSize}, pick on the grid or type)`}
+                      </label>
                       <input
                         type="text"
-                        placeholder="e.g., 7 or 1,2,3"
+                        placeholder={insideSize === 1 ? 'e.g., 7' : { 2: 'e.g., 1,2 or 1,4', 3: 'e.g., 4,5,6', 4: 'e.g., 1,2,4,5', 6: 'e.g., 1,2,3,4,5,6' }[insideSize]}
                         value={betNumbers}
                         onChange={(e) => setBetNumbers(e.target.value)}
                       />
+                    </div>
+                  )}
+
+                  {(betType === BetType.DOZEN || betType === BetType.COLUMN) && (
+                    <div className="form-group">
+                      <label>{betType === BetType.DOZEN ? 'Dozen' : 'Column'}</label>
+                      <select value={betNumbers} onChange={(e) => setBetNumbers(e.target.value)}>
+                        {betType === BetType.DOZEN ? (
+                          <>
+                            <option value="1">1st (1-12)</option>
+                            <option value="2">2nd (13-24)</option>
+                            <option value="3">3rd (25-36)</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="1">1st (1, 4, ... 34)</option>
+                            <option value="2">2nd (2, 5, ... 35)</option>
+                            <option value="3">3rd (3, 6, ... 36)</option>
+                          </>
+                        )}
+                      </select>
                     </div>
                   )}
 
@@ -698,7 +852,7 @@ function App() {
                   <button
                     className="btn-primary bet-btn"
                     onClick={handlePlaceBet}
-                    disabled={isWriting || gameState !== STATE_OPEN}
+                    disabled={isWriting || gameState !== STATE_OPEN || !!isPaused || !betNumbersReady}
                   >
                     Place Bet
                   </button>
@@ -707,16 +861,16 @@ function App() {
                 {/* Number Grid for quick selection */}
                 <div className="number-grid">
                   <button
-                    className={`number-btn green ${betNumbers === '0' ? 'selected' : ''}`}
-                    onClick={() => { setBetType(BetType.STRAIGHT_UP); setBetNumbers('0'); }}
+                    className={`number-btn green ${insideSize && selectedNumbers.includes(0) ? 'selected' : ''}`}
+                    onClick={() => handleNumberClick(0)}
                   >
                     0
                   </button>
                   {Array.from({ length: 36 }, (_, i) => i + 1).map(num => (
                     <button
                       key={num}
-                      className={`number-btn ${getNumberColor(num)} ${betNumbers === num.toString() ? 'selected' : ''}`}
-                      onClick={() => { setBetType(BetType.STRAIGHT_UP); setBetNumbers(num.toString()); }}
+                      className={`number-btn ${getNumberColor(num)} ${insideSize && selectedNumbers.includes(num) ? 'selected' : ''}`}
+                      onClick={() => handleNumberClick(num)}
                     >
                       {num}
                     </button>
@@ -727,42 +881,85 @@ function App() {
                 <div className="quick-bets">
                   <button
                     className={`quick-bet-btn red ${betType === BetType.RED ? 'selected' : ''}`}
-                    onClick={() => { setBetType(BetType.RED); setBetNumbers(''); }}
+                    onClick={() => handleBetTypeChange(BetType.RED)}
                   >
                     RED
                   </button>
                   <button
                     className={`quick-bet-btn black ${betType === BetType.BLACK ? 'selected' : ''}`}
-                    onClick={() => { setBetType(BetType.BLACK); setBetNumbers(''); }}
+                    onClick={() => handleBetTypeChange(BetType.BLACK)}
                   >
                     BLACK
                   </button>
                   <button
                     className={`quick-bet-btn ${betType === BetType.ODD ? 'selected' : ''}`}
-                    onClick={() => { setBetType(BetType.ODD); setBetNumbers(''); }}
+                    onClick={() => handleBetTypeChange(BetType.ODD)}
                   >
                     ODD
                   </button>
                   <button
                     className={`quick-bet-btn ${betType === BetType.EVEN ? 'selected' : ''}`}
-                    onClick={() => { setBetType(BetType.EVEN); setBetNumbers(''); }}
+                    onClick={() => handleBetTypeChange(BetType.EVEN)}
                   >
                     EVEN
                   </button>
                   <button
                     className={`quick-bet-btn ${betType === BetType.LOW ? 'selected' : ''}`}
-                    onClick={() => { setBetType(BetType.LOW); setBetNumbers(''); }}
+                    onClick={() => handleBetTypeChange(BetType.LOW)}
                   >
                     1-18
                   </button>
                   <button
                     className={`quick-bet-btn ${betType === BetType.HIGH ? 'selected' : ''}`}
-                    onClick={() => { setBetType(BetType.HIGH); setBetNumbers(''); }}
+                    onClick={() => handleBetTypeChange(BetType.HIGH)}
                   >
                     19-36
                   </button>
                 </div>
               </section>
+
+              {/* Your bets: open round, and results of the last round */}
+              {(myCurrentBets.length > 0 || myLastBets.length > 0) && (
+                <section className="card">
+                  <h2>Your Bets</h2>
+                  {myCurrentBets.length > 0 && (
+                    <div className="form-group">
+                      <h3>Round #{currentRoundId?.toString()} ({isSpinning ? 'spinning' : 'open'})</h3>
+                      <ul className="bet-list">
+                        {myCurrentBets.map(bet => (
+                          <li key={bet.id.toString()}>
+                            <span>{describeBet(bet)}</span>
+                            <span>${formatUSDC(BigInt(bet.amount))}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {myLastBets.length > 0 && lastRound && (
+                    <div className="form-group">
+                      <h3>
+                        Round #{lastRoundId?.toString()}{' '}
+                        {lastRoundSettled ? <>result <span className={`mini-number ${getNumberColor(lastRound.winningNumber)}`}>{lastRound.winningNumber}</span></> : '(refunded)'}
+                      </h3>
+                      <ul className="bet-list">
+                        {myLastBets.map(bet => {
+                          const won = lastRoundSettled && maskToNumbers(bet.numbersMask).includes(lastRound.winningNumber);
+                          const payout = BigInt(bet.amount) * BigInt(PAYOUT_MULTIPLIERS[bet.betType] + 1);
+                          return (
+                            <li key={bet.id.toString()} className={lastRoundSettled ? (won ? 'win' : 'loss') : ''}>
+                              <span>{describeBet(bet)}</span>
+                              <span>
+                                ${formatUSDC(BigInt(bet.amount))}
+                                {lastRoundSettled && (won ? ` → won $${formatUSDC(payout)}` : ' → lost')}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  )}
+                </section>
+              )}
 
               {/* Player Stats */}
               {playerStats && (
@@ -909,7 +1106,7 @@ function App() {
           {isWriting && <span className="pending">Sending transaction...</span>}
           {isConfirming && <span className="confirming">Confirming...</span>}
           {isConfirmed && <span className="confirmed">Transaction confirmed!</span>}
-          {writeError && <span className="error">{writeError.message}</span>}
+          {writeError && <span className="error">{writeErrorMessage}</span>}
         </div>
       )}
 

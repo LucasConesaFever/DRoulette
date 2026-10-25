@@ -1,5 +1,5 @@
 // Contract addresses deployed to Anvil.
-// Update after redeploying (DeployAll / DeployWithVRF print them): the refactored contracts
+// Update after redeploying (script/deploy-local.sh prints them): the refactored contracts
 // cannot be reused with an old deployment, since vault.setRoulette can only be called once.
 export const CONTRACTS = {
   USDC: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
@@ -52,6 +52,24 @@ export const BET_TYPE_LABELS: Record<BetType, string> = {
   [BetType.LOW]: 'Low 1-18 (1:1)',
   [BetType.HIGH]: 'High 19-36 (1:1)',
 };
+
+// Payout multipliers, indexed by BetType (RouletteTypes.getPayoutMultiplier)
+export const PAYOUT_MULTIPLIERS = [35, 17, 11, 8, 5, 2, 2, 1, 1, 1, 1, 1, 1];
+
+// How many numbers each inside bet takes. Dozen and column take one selector (1, 2 or 3), outside bets none.
+export const INSIDE_BET_SIZES: Partial<Record<BetType, number>> = {
+  [BetType.STRAIGHT_UP]: 1,
+  [BetType.SPLIT]: 2,
+  [BetType.STREET]: 3,
+  [BetType.CORNER]: 4,
+  [BetType.LINE]: 6,
+};
+
+// Numbers covered by a bet's mask (bit n = number n)
+export function maskToNumbers(mask: number | bigint): number[] {
+  const m = BigInt(mask);
+  return Array.from({ length: 37 }, (_, n) => n).filter(n => (m >> BigInt(n)) & 1n);
+}
 
 // Red numbers in European roulette
 export const RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
