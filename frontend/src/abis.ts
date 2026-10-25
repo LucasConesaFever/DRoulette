@@ -1244,8 +1244,8 @@ export const ROULETTE_ABI = [
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -1262,7 +1262,7 @@ export const ROULETTE_ABI = [
     "name": "credits",
     "inputs": [
       {
-        "name": "",
+        "name": "player",
         "type": "address",
         "internalType": "address"
       }
@@ -1283,8 +1283,8 @@ export const ROULETTE_ABI = [
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -1488,25 +1488,6 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "function",
-    "name": "getRequestIdToRoundId",
-    "inputs": [
-      {
-        "name": "requestId",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "getRound",
     "inputs": [
       {
@@ -1521,11 +1502,6 @@ export const ROULETTE_ABI = [
         "type": "tuple",
         "internalType": "struct RouletteTypes.Round",
         "components": [
-          {
-            "name": "requestId",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
           {
             "name": "firstBetId",
             "type": "uint64",
@@ -1563,11 +1539,6 @@ export const ROULETTE_ABI = [
           },
           {
             "name": "totalBets",
-            "type": "uint128",
-            "internalType": "uint128"
-          },
-          {
-            "name": "totalPayout",
             "type": "uint128",
             "internalType": "uint128"
           },
@@ -1653,8 +1624,8 @@ export const ROULETTE_ABI = [
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "uint40",
+        "internalType": "uint40"
       }
     ],
     "stateMutability": "view"
@@ -1753,6 +1724,19 @@ export const ROULETTE_ABI = [
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pendingRequestId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -1917,8 +1901,8 @@ export const ROULETTE_ABI = [
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "uint40",
+        "internalType": "uint40"
       }
     ],
     "stateMutability": "view"
@@ -1969,8 +1953,8 @@ export const ROULETTE_ABI = [
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "uint128",
+        "internalType": "uint128"
       }
     ],
     "stateMutability": "view"
@@ -1982,8 +1966,8 @@ export const ROULETTE_ABI = [
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "uint128",
+        "internalType": "uint128"
       }
     ],
     "stateMutability": "view"
@@ -2355,6 +2339,12 @@ export const ROULETTE_ABI = [
         "internalType": "uint256"
       },
       {
+        "name": "winningNumber",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
         "name": "totalBets",
         "type": "uint256",
         "indexed": false,
@@ -2371,37 +2361,6 @@ export const ROULETTE_ABI = [
         "type": "int256",
         "indexed": false,
         "internalType": "int256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "SpinCompleted",
-    "inputs": [
-      {
-        "name": "roundId",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "winningNumber",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "uint8"
-      },
-      {
-        "name": "winningColor",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "enum RouletteTypes.Color"
-      },
-      {
-        "name": "totalPayout",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -2433,6 +2392,12 @@ export const ROULETTE_ABI = [
         "name": "roundId",
         "type": "uint256",
         "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "requestId",
+        "type": "uint256",
+        "indexed": false,
         "internalType": "uint256"
       },
       {

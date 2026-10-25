@@ -266,12 +266,11 @@ function App() {
     query: { refetchInterval: POLL_INTERVAL },
   });
 
-  // Get current round info (for VRF requestId when spinning)
-  const { data: currentRound, refetch: refetchCurrentRound } = useReadContract({
+  // VRF request of the spin in progress (only meaningful while CALCULATING)
+  const { data: pendingRequestId, refetch: refetchPendingRequestId } = useReadContract({
     address: CONTRACTS.ROULETTE,
     abi: ROULETTE_ABI,
-    functionName: 'getRound',
-    args: currentRoundId ? [currentRoundId] : undefined,
+    functionName: 'pendingRequestId',
     query: { refetchInterval: POLL_INTERVAL },
   });
 
@@ -314,7 +313,7 @@ function App() {
     refetchPlayerStats();
     refetchPreviewRedeem();
     refetchLastRound();
-    refetchCurrentRound();
+    refetchPendingRequestId();
   };
 
   // Actions
@@ -417,10 +416,10 @@ function App() {
   };
 
   const handleFulfillVRF = () => {
-    // Use the actual requestId from the current round, not the roundId
-    const requestId = currentRound?.requestId;
+    // Use the pending VRF requestId, not the roundId
+    const requestId = pendingRequestId;
     if (!requestId) {
-      console.error('No requestId found for current round');
+      console.error('No pending VRF request');
       return;
     }
     writeContract({
@@ -560,14 +559,14 @@ function App() {
                   <>
                     <div className="vrf-status">
                       <span className="vrf-waiting">Waiting for VRF...</span>
-                      {!!currentRound?.requestId && (
-                        <span className="vrf-request-id">Request ID: {currentRound.requestId.toString().slice(0, 8)}...</span>
+                      {!!pendingRequestId && (
+                        <span className="vrf-request-id">Request ID: {pendingRequestId.toString().slice(0, 8)}...</span>
                       )}
                     </div>
                     <button
                       className="btn-fulfill"
                       onClick={handleFulfillVRF}
-                      disabled={isWriting || !currentRound?.requestId}
+                      disabled={isWriting || !pendingRequestId}
                     >
                       Fulfill VRF (Anvil Only)
                     </button>
