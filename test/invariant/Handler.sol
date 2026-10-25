@@ -35,6 +35,9 @@ contract Handler is Test {
     uint256 public ghostStakesRefunded;
     // Late VRF answers that changed a refunded round (must stay 0). A counter, not an assert, so Echidna and Medusa can check it too
     uint256 public ghostLateFulfillViolations;
+    // USDC sent straight to Roulette, and swept back out by the owner
+    uint256 public ghostRouletteDonated;
+    uint256 public ghostRouletteSwept;
 
     constructor(
         Roulette _roulette,
@@ -79,7 +82,7 @@ contract Handler is Test {
     }
 
     function placeBet(uint256 actorSeed, uint256 betTypeSeed, uint256 numberSeed, uint256 amount) external {
-        if (roulette.state() != RouletteTypes.RouletteState.OPEN) return;
+        if (roulette.state() != RouletteTypes.RouletteState.OPEN || roulette.paused()) return;
         RouletteTypes.Round memory round = roulette.getRound(roulette.currentRoundId());
         if (round.firstBetId != 0 && round.lastBetId - round.firstBetId + 1 >= roulette.MAX_BETS_PER_ROUND()) return;
 
@@ -105,7 +108,7 @@ contract Handler is Test {
                                  OWNER
     //////////////////////////////////////////////////////////////*/
     function spin() external {
-        if (roulette.state() != RouletteTypes.RouletteState.OPEN) return;
+        if (roulette.state() != RouletteTypes.RouletteState.OPEN || roulette.paused()) return;
         uint256 roundId = roulette.currentRoundId();
         if (roulette.getRound(roundId).firstBetId == 0) return;
 
@@ -146,6 +149,83 @@ contract Handler is Test {
         if (roulette.totalCredits() != creditsBefore || !round.refunded || round.winningNumber != 255) {
             ++ghostLateFulfillViolations;
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                 ADMIN
+    //////////////////////////////////////////////////////////////*/
+    function setBetLimits(uint256 minSeed, uint256 maxSeed) external {
+        uint256 newMin = bound(minSeed, 1, 10e6);
+        uint256 newMax = bound(maxSeed, newMin, 1_000e6);
+        vm.startPrank(owner);
+        // Order the two calls so minBet <= maxBet holds after each one
+        if (newMin > roulette.maxBet()) {
+            roulette.setMaxBet(newMax);
+            roulette.setMinBet(newMin);
+        } else {
+            roulette.setMinBet(newMin);
+            roulette.setMaxBet(newMax);
+        }
+        vm.stopPrank();
+    }
+
+    function setMaxExposureBps(uint256 bps) external {
+        vm.prank(owner);
+        roulette.setMaxExposureBps(bound(bps, 0, 10_000));
+    }
+
+    function setSpinDelay(uint256 delay) external {
+        vm.prank(owner);
+        roulette.setSpinDelay(bound(delay, 0, 1 hours));
+    }
+
+    function togglePause() external {
+        bool paused = roulette.paused();
+        vm.prank(owner);
+        if (paused) roulette.unpause();
+        else roulette.pause();
+    }
+
+    function emergencyStop() external {
+        if (roulette.state() != RouletteTypes.RouletteState.OPEN) return;
+        vm.prank(owner);
+        roulette.emergencyStopBetting();
+    }
+
+    function emergencyResume() external {
+        if (roulette.state() != RouletteTypes.RouletteState.CALCULATING || ghostPendingRequestId != 0) return;
+        vm.prank(owner);
+        roulette.emergencyResumeBetting();
+    }
+
+    /// @dev After an emergency stop anyone can refund once the timeout passed
+    function refundStoppedRound(uint256 actorSeed) external {
+        if (roulette.state() != RouletteTypes.RouletteState.CALCULATING || ghostPendingRequestId != 0) return;
+        uint256 stakes = roulette.getRound(roulette.currentRoundId()).totalBets;
+        vm.warp(block.timestamp + roulette.vrfTimeout());
+        vm.prank(players[actorSeed % players.length]);
+        roulette.refundRound();
+        ghostStakesRefunded += stakes;
+        ++ghostRefundedRounds;
+    }
+
+    function setMaxCapacity(uint256 capacity) external {
+        vm.prank(owner);
+        vault.setMaxCapacity(bound(capacity, 0, 20_000_000e6));
+    }
+
+    function donateToRoulette(uint256 amount) external {
+        amount = bound(amount, 1, 1_000e6);
+        usdc.mint(address(roulette), amount);
+        ghostRouletteDonated += amount;
+    }
+
+    function sweepExcess() external {
+        uint256 excess = roulette.excessUsdc();
+        if (excess == 0) return;
+        vm.prank(owner);
+        roulette.sweepExcess(owner);
+        ghostRouletteSwept += excess;
     }
 
     /*//////////////////////////////////////////////////////////////

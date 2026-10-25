@@ -19,11 +19,19 @@ contract RouletteInvariantTest is StdInvariant, BaseTest {
         targetContract(address(handler));
     }
 
-    /// @notice Roulette's USDC is exactly the credits plus the stakes of the round in progress
+    /// @notice Roulette's USDC is exactly the credits plus the stakes of the round in progress, plus unswept donations
     function invariant_RouletteBalanceBacksCreditsAndStakes() public view {
         RouletteTypes.Round memory round = roulette.getRound(roulette.currentRoundId());
         uint256 openStakes = round.completed ? 0 : round.totalBets;
-        assertEq(usdc.balanceOf(address(roulette)), roulette.totalCredits() + openStakes);
+        assertEq(
+            usdc.balanceOf(address(roulette)),
+            roulette.totalCredits() + openStakes + handler.ghostRouletteDonated() - handler.ghostRouletteSwept()
+        );
+    }
+
+    /// @notice excessUsdc is exactly what was sent to Roulette directly and not swept yet
+    function invariant_ExcessIsUnsweptDonations() public view {
+        assertEq(roulette.excessUsdc(), handler.ghostRouletteDonated() - handler.ghostRouletteSwept());
     }
 
     /// @notice The exposure limit and LP reserve make a deficit unreachable through normal use

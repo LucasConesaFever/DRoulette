@@ -92,11 +92,56 @@ contract CryticTester {
         handler.lpRedeem(actorSeed, shares);
     }
 
+    function setBetLimits(uint256 minSeed, uint256 maxSeed) external {
+        handler.setBetLimits(minSeed, maxSeed);
+    }
+
+    function setMaxExposureBps(uint256 bps) external {
+        handler.setMaxExposureBps(bps);
+    }
+
+    function setSpinDelay(uint256 delay) external {
+        handler.setSpinDelay(delay);
+    }
+
+    function togglePause() external {
+        handler.togglePause();
+    }
+
+    function emergencyStop() external {
+        handler.emergencyStop();
+    }
+
+    function emergencyResume() external {
+        handler.emergencyResume();
+    }
+
+    function refundStoppedRound(uint256 actorSeed) external {
+        handler.refundStoppedRound(actorSeed);
+    }
+
+    function setMaxCapacity(uint256 capacity) external {
+        handler.setMaxCapacity(capacity);
+    }
+
+    function donateToRoulette(uint256 amount) external {
+        handler.donateToRoulette(amount);
+    }
+
+    function sweepExcess() external {
+        handler.sweepExcess();
+    }
+
     /*//////////////////////////////////////////////////////////////
                                PROPERTIES
     //////////////////////////////////////////////////////////////*/
     function property_RouletteBalanceBacksCreditsAndStakes() external view returns (bool) {
-        return usdc.balanceOf(address(roulette)) == roulette.totalCredits() + _openStakes();
+        return usdc.balanceOf(address(roulette))
+            == roulette.totalCredits() + _openStakes() + handler.ghostRouletteDonated() - handler.ghostRouletteSwept();
+    }
+
+    function property_ExcessIsUnsweptDonations() external view returns (bool) {
+        return roulette.excessUsdc() == handler.ghostRouletteDonated() - handler.ghostRouletteSwept();
     }
 
     function property_NoDeficit() external view returns (bool) {
