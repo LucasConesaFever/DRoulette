@@ -64,7 +64,7 @@ contract CallbackGasTest is BaseTest {
     }
 
     function test_LogCallbackGas() public {
-        uint256[4] memory sizes = [uint256(1), 10, 25, 40];
+        uint256[4] memory sizes = [uint256(1), 25, 50, 70];
         for (uint256 k; k < sizes.length; ++k) {
             uint256 snapshot = vm.snapshotState();
             uint256 winStraight = _measureCallback(_fillRound(sizes[k], true, false));

@@ -44,9 +44,9 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     bool private immutable i_nativePayment; // true = pay with ETH, false = pay with LINK
 
     /// @notice Max bets per round, so a round with every bet winning settles within the callback gas limit
-    /// @dev Sized by test/gas/CallbackGas.t.sol with cold storage: worst case ~51k gas per winning
-    ///      bet + ~182k fixed, 40 bets ~2.22M of the 2.5M callback gas limit (~11% headroom)
-    uint256 public constant MAX_BETS_PER_ROUND = 40; // {count}
+    /// @dev Sized by test/gas/CallbackGas.t.sol with cold storage: worst case ~29.5k gas per winning
+    ///      bet + ~113k fixed, 70 bets ~2.17M of the 2.5M callback gas limit (~13% headroom)
+    uint256 public constant MAX_BETS_PER_ROUND = 70; // {count}
     uint256 private constant BPS = 10_000; // BPS{1} = 100%
     /// @notice Lower bound for vrfTimeout, so the owner can't refund a round right after seeing its result
     uint256 public constant MIN_VRF_TIMEOUT = 1 hours; // {s}
