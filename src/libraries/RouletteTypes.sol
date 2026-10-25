@@ -64,8 +64,7 @@ library RouletteTypes {
         Color winningColor;
         bool completed;
         bool refunded;
-        uint128 totalBets; // D6{USDC} sum of stakes (NOT a count)
-        uint128 totalPayout; // D6{USDC} gross: sum of payouts (stake + winnings) to winners
+        uint128 totalBets; // D6{USDC} sum of stakes (NOT a count). The round's payout is in RoundSettled
         // D6{USDC} = Σ D6{USDC} * D0{1}
         uint256 maxExposure; // D6{USDC} gross: sum of amount * (multiplier + 1), worst case if every bet wins
     }

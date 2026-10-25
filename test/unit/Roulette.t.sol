@@ -364,16 +364,20 @@ contract RouletteTest is BaseTest {
         uint256 totalBets = amounts[0] + amounts[1] + amounts[2];
         uint256 roundId = _spinAndFulfill(word);
 
-        RouletteTypes.Round memory round = roulette.getRound(roundId);
-        assertTrue(round.completed);
-        assertEq(round.totalPayout, roulette.totalCredits(), "all payouts credited");
-        assertEq(vault.totalAssets() + round.totalPayout, vaultBefore + totalBets, "one net transfer");
+        assertTrue(roulette.getRound(roundId).completed);
+        uint256 totalPayout;
+        for (uint256 betId = 1; betId <= 3; ++betId) {
+            (,, uint256 payout) = roulette.getBetResult(betId, roundId);
+            totalPayout += payout;
+        }
+        assertEq(totalPayout, roulette.totalCredits(), "all payouts credited");
+        assertEq(vault.totalAssets() + totalPayout, vaultBefore + totalBets, "one net transfer");
         _assertRouletteSolvent();
 
         (uint256 wagered, uint256 paidOut, int256 netPnl) = roulette.getHouseStats();
         assertEq(wagered, totalBets);
-        assertEq(paidOut, round.totalPayout);
-        assertEq(netPnl, int256(totalBets) - int256(uint256(round.totalPayout)));
+        assertEq(paidOut, totalPayout);
+        assertEq(netPnl, int256(totalBets) - int256(totalPayout));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -484,7 +488,8 @@ contract RouletteTest is BaseTest {
         uint256 roundId = _spinAndFulfill(word);
 
         assertEq(roulette.getRound(roundId).winningNumber, n);
-        assertEq(roulette.getRound(roundId).totalPayout, expectedTotal, "round total");
+        (, uint256 paidOut,) = roulette.getHouseStats(); // first round: house total = round total
+        assertEq(paidOut, expectedTotal, "round total");
         for (uint256 p; p < 3; ++p) {
             assertEq(roulette.credits(s_bettors[p]) - s_creditsBefore[p], s_expected[p], "player credited");
         }
@@ -1097,6 +1102,17 @@ contract RouletteTest is BaseTest {
         assertEq(uint8(roulette.state()), uint8(RouletteTypes.RouletteState.OPEN));
         (,, int256 netPnl) = roulette.getHouseStats();
         assertEq(netPnl, 0);
+    }
+
+    function test_Settle_EmitsRoundSettled() public {
+        _fundCredits(player1, 20e6);
+        _betRed(player1, 10e6); // wins 20
+        _betStraight(player1, 5, 5e6); // loses
+        uint256 requestId = _spin();
+
+        vm.expectEmit(address(roulette));
+        emit Roulette.RoundSettled(1, uint8(RED_NUMBER), 15e6, 20e6, 5e6);
+        _fulfill(requestId, RED_NUMBER);
     }
 
     function test_Settle_StoresWinningNumberAndColor() public {

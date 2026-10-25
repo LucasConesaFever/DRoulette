@@ -59,7 +59,8 @@ contract CallbackGasTest is BaseTest {
         // Through the mock, with the real gas limit: the round must complete
         _fulfill(requestId, WINNING_NUMBER);
         assertTrue(roulette.getRound(1).completed, "callback ran out of gas");
-        assertEq(roulette.getRound(1).totalPayout, maxBets * MIN_BET * 2);
+        (, uint256 paidOut,) = roulette.getHouseStats();
+        assertEq(paidOut, maxBets * MIN_BET * 2);
     }
 
     function test_LogCallbackGas() public {

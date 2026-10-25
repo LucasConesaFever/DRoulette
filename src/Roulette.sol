@@ -94,6 +94,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
+    /// @notice State changes not already marked by SpinRequested (-> CALCULATING) or RoundSettled (-> OPEN,
+    ///         unless DeficitRecorded follows); leaving them out saves the callback an event per round
     event StateChanged(RouletteTypes.RouletteState indexed newState);
     event CreditsDeposited(address indexed player, uint256 amount); // amount: D6{USDC} -> D6{credit} 1:1
     event CreditsWithdrawn(address indexed player, uint256 amount); // amount: D6{credit} -> D6{USDC} 1:1
@@ -107,12 +109,10 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     );
     event SpinRequested(uint256 indexed roundId, uint256 requestId, uint256 timestamp); // timestamp: {s}
     event BetWon(uint256 indexed betId, address indexed player, uint256 payout); // payout: D6{USDC} gross
-    // winningNumber: {pocket}; totalPayout: D6{USDC} gross
-    event SpinCompleted(
-        uint256 indexed roundId, uint8 winningNumber, RouletteTypes.Color winningColor, uint256 totalPayout
+    // winningNumber: {pocket}; totalBets: D6{USDC} stakes; totalPayout: D6{USDC} gross; netToPlayers: signed D6{USDC}
+    event RoundSettled(
+        uint256 indexed roundId, uint8 winningNumber, uint256 totalBets, uint256 totalPayout, int256 netToPlayers
     );
-    // totalBets: D6{USDC} stakes; totalPayout: D6{USDC} gross; netToPlayers: signed D6{USDC}
-    event RoundSettled(uint256 indexed roundId, uint256 totalBets, uint256 totalPayout, int256 netToPlayers);
     event DeficitRecorded(uint256 indexed roundId, uint256 deficit); // deficit: D6{USDC}
     event DeficitCovered(uint256 amount, uint256 remaining); // D6{USDC}, D6{USDC}
     event RoundRefunded(uint256 indexed roundId);
@@ -290,7 +290,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         uint256 roundId = currentRoundId;
         if (s_rounds[roundId].firstBetId == 0) revert Roulette__NoActiveBets();
 
-        _setState(RouletteTypes.RouletteState.CALCULATING);
+        state = RouletteTypes.RouletteState.CALCULATING; // marked by SpinRequested
         // forge-lint: disable-next-line(unsafe-typecast) timestamps fit in uint40 until ~year 36800
         spinRequestedAt = uint40(block.timestamp);
 
@@ -685,16 +685,13 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         round.winningNumber = winningNumber;
         round.winningColor = winningColor;
         round.completed = true;
-        // forge-lint: disable-next-line(unsafe-typecast) payout <= round maxExposure, bounded by MAX_BETS_PER_ROUND uint48 bets
-        round.totalPayout = uint128(totalPayout); // D6{USDC} gross
 
         // forge-lint: disable-next-line(unsafe-typecast) timestamps fit in uint40 until ~year 36800
         lastSpinTimestamp = uint40(block.timestamp); // {s}
         // forge-lint: disable-next-line(unsafe-typecast) round ids can't reach 2^64
         currentRoundId = uint64(roundId + 1);
 
-        emit SpinCompleted(roundId, winningNumber, winningColor, totalPayout);
-        emit RoundSettled(roundId, roundTotalBets, totalPayout, netToPlayers);
+        emit RoundSettled(roundId, winningNumber, roundTotalBets, totalPayout, netToPlayers);
 
         _settleWithVault(roundId, netToPlayers);
     }
@@ -705,14 +702,15 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
      * @param netToPlayers signed D6{USDC} (gross payout - stakes); < 0 means house won
      */
     function _settleWithVault(uint256 roundId, int256 netToPlayers) internal {
+        // OPEN is marked by RoundSettled; only DEFICIT emits StateChanged
         if (netToPlayers < 0) {
-            _setState(RouletteTypes.RouletteState.OPEN);
+            state = RouletteTypes.RouletteState.OPEN;
             // forge-lint: disable-next-line(unsafe-typecast) netToPlayers < 0
             usdc.safeTransfer(address(vault), uint256(-netToPlayers)); // D6{USDC} house net winnings
             return;
         }
         if (netToPlayers == 0) {
-            _setState(RouletteTypes.RouletteState.OPEN);
+            state = RouletteTypes.RouletteState.OPEN;
             return;
         }
 
@@ -720,7 +718,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         uint256 owed = uint256(netToPlayers); // D6{USDC}
         uint256 available = usdc.balanceOf(address(vault)); // D6{USDC}
         if (available >= owed) {
-            _setState(RouletteTypes.RouletteState.OPEN);
+            state = RouletteTypes.RouletteState.OPEN;
             vault.fundPayout(owed); // D6{USDC} net player winnings
             return;
         }
