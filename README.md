@@ -118,13 +118,15 @@ mewt run && mewt results                                      # mutation testing
 `script/HelperConfig.s.sol` picks the network settings: on Anvil it deploys `MockUSDC` and a VRF V2.5 mock, on Sepolia it uses Circle's test USDC (`0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`) and the Chainlink coordinator.
 
 ```bash
-# Local: Anvil, then deploy, fund and configure everything (PRIVATE_KEY = an Anvil account key)
+# Local: Anvil, then deploy, fund and configure everything (defaults to Anvil account 0)
 anvil
-PRIVATE_KEY=<anvil key> forge script script/DeployAndSetupLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
+script/deploy-local.sh   # prints the addresses to put in frontend/src/config.ts
 
 # Sepolia (--account <keystore> or PRIVATE_KEY)
 forge script script/DeployRoulette.s.sol --rpc-url $SEPOLIA_RPC_URL --account <keystore> --broadcast
 ```
+
+The local deploy takes two forge runs: the VRF mock derives the subscription id from the previous block hash, so the id Roulette needs is only known once the subscription exists on-chain.
 
 `script/Interactions.s.sol` has helpers for the VRF subscription (create, fund, add consumer), LP deposit and withdrawal, player credits, and a `GetVaultInfo` summary.
 

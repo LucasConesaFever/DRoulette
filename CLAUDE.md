@@ -32,7 +32,10 @@ forge test --match-test testVault_LPYieldAccumulation
 # Coverage report
 forge coverage
 
-# Deploy locally
+# Deploy locally (Anvil running): VRF mock, USDC, vault, Roulette, funded and configured
+script/deploy-local.sh
+
+# Deploy to a network
 forge script script/DeployRoulette.s.sol --rpc-url $RPC_URL --broadcast
 ```
 
