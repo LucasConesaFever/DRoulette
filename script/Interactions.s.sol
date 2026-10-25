@@ -272,11 +272,11 @@ contract GetVaultInfo is Script {
         console.log("Total Wagered:", wagered / 1e6, "USDC");
         console.log("Total Paid Out:", paidOut / 1e6, "USDC");
         console.log("House Net PnL (raw USDC):", netPnl);
-        console.log("Player Credits (USDC in Roulette):", roulette.getTotalCredits() / 1e6, "USDC");
+        console.log("Player Credits (USDC in Roulette):", roulette.totalCredits() / 1e6, "USDC");
 
         // Risk Management
         console.log("\n--- Risk Management ---");
-        console.log("State (0=OPEN 1=CALCULATING 2=DEFICIT):", uint256(roulette.getState()));
+        console.log("State (0=OPEN 1=CALCULATING 2=DEFICIT):", uint256(roulette.state()));
         console.log("Max Bet:", roulette.maxBet() / 1e6, "USDC");
         console.log("Max Exposure (bps of vault assets):", roulette.maxExposureBps());
         console.log("Max Bets per Round:", roulette.MAX_BETS_PER_ROUND());

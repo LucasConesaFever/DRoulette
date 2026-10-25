@@ -123,6 +123,15 @@ contract RouletteTest is BaseTest {
         assertEq(roulette.getRound(2).firstBetId, 4);
     }
 
+    function test_PlaceBet_EmitsNumbersMask() public {
+        _fundCredits(player1, 10e6);
+        uint8[] memory numbers = new uint8[](2);
+        (numbers[0], numbers[1]) = (17, 20);
+        vm.expectEmit(address(roulette));
+        emit Roulette.BetPlaced(1, 1, player1, RouletteTypes.BetType.SPLIT, (uint40(1) << 17) | (uint40(1) << 20), 2e6);
+        _bet(player1, RouletteTypes.BetType.SPLIT, numbers, 2e6);
+    }
+
     function test_PlaceBet_RevertWhen_InvalidNumbers() public {
         _fundCredits(player1, 10e6);
         uint8[] memory numbers = new uint8[](1);

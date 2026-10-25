@@ -95,6 +95,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         uint256 indexed betId,
         address indexed player,
         RouletteTypes.BetType betType,
+        uint40 numbersMask, // bit n set = bet covers number n
         uint256 amount // D6{USDC} stake
     );
     event SpinRequested(uint256 indexed roundId, uint256 timestamp); // timestamp: {s}
@@ -262,7 +263,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         });
         _recordPlayerBet(roundId, amount);
 
-        emit BetPlaced(roundId, betId, msg.sender, betType, amount);
+        emit BetPlaced(roundId, betId, msg.sender, betType, numbersMask, amount);
     }
 
     /**
@@ -537,11 +538,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         return s_rounds[roundId];
     }
 
-    /// @notice Get current state of the roulette
-    function getState() external view returns (RouletteTypes.RouletteState) {
-        return state;
-    }
-
     /// @notice Get VRF configuration
     function getVrfConfig()
         external
@@ -560,16 +556,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     /// @notice Get round ID from VRF request ID
     function getRequestIdToRoundId(uint256 requestId) external view returns (uint256) {
         return s_requestIdToRoundId[requestId];
-    }
-
-    /// @notice Get player's credit balance
-    function getCredits(address player) external view returns (uint256) {
-        return credits[player];
-    }
-
-    /// @notice Get total credits in circulation
-    function getTotalCredits() external view returns (uint256) {
-        return totalCredits;
     }
 
     /*//////////////////////////////////////////////////////////////

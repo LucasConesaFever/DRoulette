@@ -1331,6 +1331,19 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "function",
+    "name": "excessUsdc",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getBet",
     "inputs": [
       {
@@ -1398,25 +1411,6 @@ export const ROULETTE_ABI = [
       },
       {
         "name": "payout",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "getCredits",
-    "inputs": [
-      {
-        "name": "player",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1608,32 +1602,6 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "function",
-    "name": "getState",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint8",
-        "internalType": "enum RouletteTypes.RouletteState"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "getTotalCredits",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "getVrfConfig",
     "inputs": [],
     "outputs": [
@@ -1778,6 +1746,19 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "function",
+    "name": "pendingOwner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "placeBet",
     "inputs": [
       {
@@ -1826,6 +1807,13 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "function",
+    "name": "renounceOwnership",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "reservedLiquidity",
     "inputs": [],
     "outputs": [
@@ -1836,32 +1824,6 @@ export const ROULETTE_ABI = [
       }
     ],
     "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "s_vrfCoordinator",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IVRFCoordinatorV2Plus"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "setCoordinator",
-    "inputs": [
-      {
-        "name": "_vrfCoordinator",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1976,6 +1938,19 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "function",
+    "name": "sweepExcess",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "totalCredits",
     "inputs": [],
     "outputs": [
@@ -2018,7 +1993,7 @@ export const ROULETTE_ABI = [
     "name": "transferOwnership",
     "inputs": [
       {
-        "name": "to",
+        "name": "newOwner",
         "type": "address",
         "internalType": "address"
       }
@@ -2114,6 +2089,12 @@ export const ROULETTE_ABI = [
         "internalType": "enum RouletteTypes.BetType"
       },
       {
+        "name": "numbersMask",
+        "type": "uint40",
+        "indexed": false,
+        "internalType": "uint40"
+      },
+      {
         "name": "amount",
         "type": "uint256",
         "indexed": false,
@@ -2143,19 +2124,6 @@ export const ROULETTE_ABI = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "CoordinatorSet",
-    "inputs": [
-      {
-        "name": "vrfCoordinator",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -2238,6 +2206,25 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "event",
+    "name": "ExcessSwept",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "MaxBetUpdated",
     "inputs": [
       {
@@ -2295,16 +2282,16 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "event",
-    "name": "OwnershipTransferRequested",
+    "name": "OwnershipTransferStarted",
     "inputs": [
       {
-        "name": "from",
+        "name": "previousOwner",
         "type": "address",
         "indexed": true,
         "internalType": "address"
       },
       {
-        "name": "to",
+        "name": "newOwner",
         "type": "address",
         "indexed": true,
         "internalType": "address"
@@ -2317,13 +2304,13 @@ export const ROULETTE_ABI = [
     "name": "OwnershipTransferred",
     "inputs": [
       {
-        "name": "from",
+        "name": "previousOwner",
         "type": "address",
         "indexed": true,
         "internalType": "address"
       },
       {
-        "name": "to",
+        "name": "newOwner",
         "type": "address",
         "indexed": true,
         "internalType": "address"
@@ -2514,15 +2501,10 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "error",
-    "name": "OnlyCoordinatorCanFulfill",
+    "name": "OwnableInvalidOwner",
     "inputs": [
       {
-        "name": "have",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "want",
+        "name": "owner",
         "type": "address",
         "internalType": "address"
       }
@@ -2530,20 +2512,10 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "error",
-    "name": "OnlyOwnerOrCoordinator",
+    "name": "OwnableUnauthorizedAccount",
     "inputs": [
       {
-        "name": "have",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "owner",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "coordinator",
+        "name": "account",
         "type": "address",
         "internalType": "address"
       }
@@ -2602,6 +2574,11 @@ export const ROULETTE_ABI = [
   },
   {
     "type": "error",
+    "name": "Roulette__InvalidBetLimits",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "Roulette__InvalidBps",
     "inputs": []
   },
@@ -2633,6 +2610,11 @@ export const ROULETTE_ABI = [
   {
     "type": "error",
     "name": "Roulette__NothingToCover",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Roulette__NothingToSweep",
     "inputs": []
   },
   {
@@ -2708,11 +2690,6 @@ export const ROULETTE_ABI = [
         "internalType": "address"
       }
     ]
-  },
-  {
-    "type": "error",
-    "name": "ZeroAddress",
-    "inputs": []
   }
 ] as const;
 

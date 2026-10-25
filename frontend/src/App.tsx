@@ -114,7 +114,7 @@ function App() {
   const { data: credits, refetch: refetchCredits } = useReadContract({
     address: CONTRACTS.ROULETTE,
     abi: ROULETTE_ABI,
-    functionName: 'getCredits',
+    functionName: 'credits',
     args: address ? [address] : undefined,
     query: { refetchInterval: POLL_INTERVAL },
   });
@@ -122,7 +122,7 @@ function App() {
   const { data: gameState, refetch: refetchGameState } = useReadContract({
     address: CONTRACTS.ROULETTE,
     abi: ROULETTE_ABI,
-    functionName: 'getState',
+    functionName: 'state',
     query: { refetchInterval: POLL_INTERVAL },
   });
 
