@@ -57,7 +57,6 @@ library RouletteTypes {
 
     /// @notice A game round. Bets of a round have contiguous ids [firstBetId, lastBetId]
     struct Round {
-        uint256 requestId; // Chainlink VRF request ID
         uint64 firstBetId;
         uint64 lastBetId;
         uint64 timestamp; // {s} time of the first bet

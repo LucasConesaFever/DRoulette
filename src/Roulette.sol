@@ -69,6 +69,13 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     uint256 public vrfTimeout; // {s} duration, >= MIN_VRF_TIMEOUT
     /// @notice USDC owed by the vault after a round it could not fully cover
     uint256 public deficit; // D6{USDC}
+    /**
+     * @notice VRF request of the spin in progress
+     * @dev One reused slot (~5k gas per spin instead of ~22k for a fresh one). Not cleared after
+     *      settlement: a fulfilled request can't be delivered again. Cleared on refund and emergency
+     *      stop, where an old request could otherwise still be answered while CALCULATING.
+     */
+    uint256 public pendingRequestId;
 
     // Player credits (1:1 with USDC held by this contract)
     mapping(address => uint256) public credits; // D6{credit} (= D6{USDC})
@@ -79,7 +86,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
     uint256 public totalPaidOut; // D6{USDC} gross: stake + winnings
     int256 public houseNetPnl; // signed D6{USDC} = -Σ netToPlayers
 
-    mapping(uint256 requestId => uint256 roundId) private s_requestIdToRoundId;
     mapping(uint256 => RouletteTypes.Round) private s_rounds;
     mapping(uint256 => RouletteTypes.Bet) private s_bets;
     mapping(address => RouletteTypes.PlayerStats) private s_playerStats;
@@ -98,7 +104,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         uint40 numbersMask, // bit n set = bet covers number n
         uint256 amount // D6{USDC} stake
     );
-    event SpinRequested(uint256 indexed roundId, uint256 timestamp); // timestamp: {s}
+    event SpinRequested(uint256 indexed roundId, uint256 requestId, uint256 timestamp); // timestamp: {s}
     event BetWon(uint256 indexed betId, address indexed player, uint256 payout); // payout: D6{USDC} gross
     // winningNumber: {pocket}; totalPayout: D6{USDC} gross
     event SpinCompleted(
@@ -297,10 +303,9 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
             })
         );
 
-        s_requestIdToRoundId[requestId] = roundId;
-        s_rounds[roundId].requestId = requestId;
+        pendingRequestId = requestId;
 
-        emit SpinRequested(roundId, block.timestamp);
+        emit SpinRequested(roundId, requestId, block.timestamp);
     }
 
     /**
@@ -337,7 +342,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         if (state != RouletteTypes.RouletteState.CALCULATING) revert Roulette__NotCalculating();
         uint256 roundId = currentRoundId;
         RouletteTypes.Round storage round = s_rounds[roundId];
-        if (round.requestId != 0) _checkOwner();
+        if (pendingRequestId != 0) _checkOwner();
 
         // {s} = {s} - {s}
         uint256 elapsed = block.timestamp - spinRequestedAt;
@@ -356,7 +361,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         // D6{credit} += D6{USDC} (sum of stakes, refunded 1:1)
         totalCredits += round.totalBets;
 
-        delete s_requestIdToRoundId[round.requestId];
+        pendingRequestId = 0;
         round.completed = true;
         round.refunded = true;
 
@@ -430,6 +435,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         if (state == RouletteTypes.RouletteState.DEFICIT) revert Roulette__DeficitOpen();
         if (state == RouletteTypes.RouletteState.CALCULATING) revert Roulette__AlreadyCalculating();
         spinRequestedAt = block.timestamp;
+        pendingRequestId = 0; // the last request was fulfilled or refunded; anyone may refund this stop
         _setState(RouletteTypes.RouletteState.CALCULATING);
     }
 
@@ -440,7 +446,9 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
      */
     function emergencyResumeBetting() external onlyOwner {
         if (state == RouletteTypes.RouletteState.DEFICIT) revert Roulette__DeficitOpen();
-        if (s_rounds[currentRoundId].requestId != 0) revert Roulette__SpinPending();
+        if (state == RouletteTypes.RouletteState.CALCULATING && pendingRequestId != 0) {
+            revert Roulette__SpinPending();
+        }
         _setState(RouletteTypes.RouletteState.OPEN);
     }
 
@@ -553,11 +561,6 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         return (address(i_vrfCoordinator), i_subscriptionId, i_gasLane, i_callbackGasLimit, i_nativePayment);
     }
 
-    /// @notice Get round ID from VRF request ID
-    function getRequestIdToRoundId(uint256 requestId) external view returns (uint256) {
-        return s_requestIdToRoundId[requestId];
-    }
-
     /*//////////////////////////////////////////////////////////////
                      INTERNAL READ-ONLY FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -626,10 +629,11 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
      */
     function rawFulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) external {
         if (msg.sender != address(i_vrfCoordinator)) revert Roulette__OnlyVrfCoordinator();
-        uint256 roundId = s_requestIdToRoundId[requestId];
-        if (roundId == 0) revert Roulette__InvalidRequestId();
-        delete s_requestIdToRoundId[requestId];
-
+        // Only the current round can be waiting for VRF; a settled or refunded round has moved currentRoundId on
+        if (state != RouletteTypes.RouletteState.CALCULATING || requestId == 0 || requestId != pendingRequestId) {
+            revert Roulette__InvalidRequestId();
+        }
+        uint256 roundId = currentRoundId;
         RouletteTypes.Round storage round = s_rounds[roundId];
         uint8 winningNumber = uint8(randomWords[0] % RouletteTypes.WHEEL_SIZE); // {pocket} 0..36
         RouletteTypes.Color winningColor = RouletteTypes.getNumberColor(winningNumber);

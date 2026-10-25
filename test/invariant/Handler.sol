@@ -115,7 +115,7 @@ contract Handler is Test {
         vm.warp(block.timestamp + roulette.spinDelay() + 1);
         vm.prank(owner);
         roulette.spin();
-        ghostPendingRequestId = roulette.getRound(roundId).requestId;
+        ghostPendingRequestId = roulette.pendingRequestId();
     }
 
     function fulfill(uint256 word) external {

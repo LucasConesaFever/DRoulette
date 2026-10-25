@@ -1257,12 +1257,70 @@ contract RouletteTest is BaseTest {
         assertFalse(settled || won);
     }
 
-    function test_GetRequestIdToRoundId() public {
+    function test_PendingRequestId_SetOnSpinClearedOnRefundAndStop() public {
         _fundCredits(player1, 10e6);
         _betRed(player1, 1e6);
         uint256 requestId = _spin();
-        assertEq(roulette.getRequestIdToRoundId(requestId), 1);
-        _fulfill(requestId, RED_NUMBER);
-        assertEq(roulette.getRequestIdToRoundId(requestId), 0);
+        assertGt(requestId, 0);
+
+        vm.warp(block.timestamp + VRF_TIMEOUT);
+        vm.prank(owner);
+        roulette.refundRound();
+        assertEq(roulette.pendingRequestId(), 0);
+
+        _betRed(player1, 1e6);
+        _spinAndFulfill(RED_NUMBER);
+        assertGt(roulette.pendingRequestId(), 0, "kept after settlement");
+        vm.prank(owner);
+        roulette.emergencyStopBetting();
+        assertEq(roulette.pendingRequestId(), 0);
+    }
+
+    /// @dev Regression for the reused request slot: an answer to a refunded request must not settle a later round
+    function test_Fulfill_LateAnswerAfterRefund_CannotSettleNextRound() public {
+        _fundCredits(player1, 100e6);
+        _betRed(player1, 1e6);
+        uint256 oldRequest = _spin();
+        vm.warp(block.timestamp + VRF_TIMEOUT);
+        vm.prank(owner);
+        roulette.refundRound();
+
+        _betStraight(player1, 7, 10e6);
+        uint256 newRequest = _spin();
+        uint256[] memory words = new uint256[](1);
+        words[0] = 7;
+        vm.prank(address(vrfCoordinator));
+        vm.expectRevert(Roulette.Roulette__InvalidRequestId.selector);
+        roulette.rawFulfillRandomWords(oldRequest, words);
+
+        _fulfill(newRequest, 7);
+        assertTrue(roulette.getRound(2).completed);
+    }
+
+    /// @dev After an emergency stop no request is pending, so no earlier request can settle the stopped round
+    function test_Fulfill_RevertWhen_RoundStopped() public {
+        _fundCredits(player1, 100e6);
+        _betRed(player1, 1e6);
+        uint256 refundedRequest = _spin();
+        vm.warp(block.timestamp + VRF_TIMEOUT);
+        vm.prank(owner);
+        roulette.refundRound();
+        _betRed(player1, 1e6);
+        uint256 settledRequest = _spin();
+        _fulfill(settledRequest, RED_NUMBER);
+
+        _betRed(player1, 1e6);
+        vm.prank(owner);
+        roulette.emergencyStopBetting();
+
+        uint256[] memory words = new uint256[](1);
+        vm.startPrank(address(vrfCoordinator));
+        vm.expectRevert(Roulette.Roulette__InvalidRequestId.selector);
+        roulette.rawFulfillRandomWords(refundedRequest, words);
+        vm.expectRevert(Roulette.Roulette__InvalidRequestId.selector);
+        roulette.rawFulfillRandomWords(settledRequest, words);
+        vm.expectRevert(Roulette.Roulette__InvalidRequestId.selector);
+        roulette.rawFulfillRandomWords(0, words);
+        vm.stopPrank();
     }
 }

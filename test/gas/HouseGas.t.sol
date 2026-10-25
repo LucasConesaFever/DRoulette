@@ -56,7 +56,7 @@ contract HouseGasTest is BaseTest {
         uint256 g = gasleft();
         roulette.spin();
         spinGas = g - gasleft();
-        uint256 requestId = roulette.getRound(roundId).requestId;
+        uint256 requestId = roulette.pendingRequestId();
 
         uint256[] memory words = new uint256[](1);
         words[0] = N;

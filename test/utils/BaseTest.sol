@@ -113,10 +113,9 @@ abstract contract BaseTest is Test {
     /// @dev Requests a spin (waiting out the spin delay) and returns the VRF request id
     function _spin() internal returns (uint256 requestId) {
         vm.warp(block.timestamp + SPIN_DELAY + 1);
-        uint256 roundId = roulette.currentRoundId();
         vm.prank(owner);
         roulette.spin();
-        requestId = roulette.getRound(roundId).requestId;
+        requestId = roulette.pendingRequestId();
     }
 
     /// @dev Fulfills a VRF request through the mock, with the real callback gas limit
