@@ -78,8 +78,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
      */
     uint256 public pendingRequestId;
 
-    // Player credits (1:1 with USDC held by this contract)
-    mapping(address => uint256) public credits; // D6{credit} (= D6{USDC})
+    // Player credits (1:1 with USDC held by this contract) and win stats, one slot per player
+    mapping(address => RouletteTypes.PlayerAccount) private s_accounts;
     uint256 public totalCredits; // D6{credit} (= D6{USDC})
 
     // House statistics
@@ -209,7 +209,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         if (amount == 0) revert Roulette__InvalidAmount();
 
         // D6{credit} += D6{USDC} (1:1)
-        credits[msg.sender] += amount;
+        s_accounts[msg.sender].credits += amount.toUint96();
         totalCredits += amount;
         emit CreditsDeposited(msg.sender, amount);
 
@@ -224,13 +224,15 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
      */
     function withdrawCredits(uint256 amount) external nonReentrant {
         if (amount == 0) revert Roulette__InvalidAmount();
-        if (credits[msg.sender] < amount) revert Roulette__InsufficientCredits();
+        RouletteTypes.PlayerAccount storage account = s_accounts[msg.sender];
+        if (account.credits < amount) revert Roulette__InsufficientCredits();
         if (state == RouletteTypes.RouletteState.DEFICIT && usdc.balanceOf(address(this)) < amount) {
             revert Roulette__InsufficientRouletteBalance();
         }
 
         // D6{credit} -= D6{credit}; paid out 1:1 as D6{USDC}
-        credits[msg.sender] -= amount;
+        // forge-lint: disable-next-line(unsafe-typecast) amount <= credits, a uint96
+        account.credits -= uint96(amount);
         totalCredits -= amount;
         emit CreditsWithdrawn(msg.sender, amount);
 
@@ -253,7 +255,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         uint40 numbersMask = RouletteTypes.toNumbersMask(betType, nums);
         if (state != RouletteTypes.RouletteState.OPEN) revert Roulette__RouletteNotOpen();
         if (amount < minBet || amount > maxBet) revert Roulette__InvalidBetAmount();
-        uint256 playerCredits = credits[msg.sender]; // D6{credit}
+        uint256 playerCredits = s_accounts[msg.sender].credits; // D6{credit}
         if (playerCredits < amount) revert Roulette__InsufficientCredits();
 
         uint256 roundId = currentRoundId;
@@ -262,7 +264,8 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
 
         // Debit credits; the USDC stays here as the round's stake
         // D6{credit} = D6{credit} - D6{credit}
-        credits[msg.sender] = playerCredits - amount;
+        // forge-lint: disable-next-line(unsafe-typecast) amount <= playerCredits, a uint96
+        s_accounts[msg.sender].credits = uint96(playerCredits - amount);
         totalCredits -= amount;
 
         s_bets[betId] = RouletteTypes.Bet({
@@ -353,7 +356,7 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         uint256 lastBetId = round.lastBetId;
         for (uint256 betId = round.firstBetId; betId != 0 && betId <= lastBetId; ++betId) {
             RouletteTypes.Bet memory bet = s_bets[betId];
-            credits[bet.player] += bet.amount; // D6{credit} += D6{USDC} stake (1:1)
+            s_accounts[bet.player].credits += bet.amount; // D6{credit} += D6{USDC} stake (1:1)
 
             RouletteTypes.PlayerStats storage stats = s_playerStats[bet.player];
             stats.totalBets -= 1; // {count}
@@ -524,6 +527,12 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
         if (won) payout = uint256(bet.amount) * (RouletteTypes.getPayoutMultiplier(bet.betType) + 1);
     }
 
+    /// @notice Credit balance of a player
+    /// @return D6{credit}
+    function credits(address player) external view returns (uint256) {
+        return s_accounts[player].credits;
+    }
+
     /// @notice Get player statistics. totalLost excludes stakes of the round in progress.
     function getPlayerStats(address player) external view returns (RouletteTypes.PlayerStatsView memory view_) {
         RouletteTypes.PlayerStats storage stats = s_playerStats[player];
@@ -531,9 +540,10 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
 
         view_.totalBets = stats.totalBets; // {count} (PlayerStats.totalBets, not Round.totalBets)
         view_.totalWagered = stats.totalWagered; // D6{USDC}
-        view_.totalWon = stats.totalWon; // D6{USDC} net
+        RouletteTypes.PlayerAccount storage account = s_accounts[player];
+        view_.totalWon = account.totalWon; // D6{USDC} net
         // D6{USDC} = D6{USDC} - D6{USDC} - D6{USDC}
-        view_.totalLost = stats.totalWagered - stats.totalWonStakes - pending;
+        view_.totalLost = stats.totalWagered - account.totalWonStakes - pending;
         view_.lastPlayedTimestamp = stats.lastPlayedTimestamp; // {s}
     }
 
@@ -660,12 +670,13 @@ contract Roulette is ReentrancyGuardTransient, Pausable, Ownable2Step, IRoulette
             // D6{USDC} gross = D6{USDC} stake + D6{USDC} net
             uint256 payout = bet.amount + winnings;
             totalPayout += payout; // D6{USDC} gross
-            credits[bet.player] += payout; // D6{credit} += D6{USDC} gross (1:1)
-
-            RouletteTypes.PlayerStats storage stats = s_playerStats[bet.player];
+            // One slot per winner: credits and win stats
+            RouletteTypes.PlayerAccount storage account = s_accounts[bet.player];
+            // forge-lint: disable-next-line(unsafe-typecast) payout <= uint48 amount * 36
+            account.credits += uint96(payout); // D6{credit} += D6{USDC} gross (1:1)
             // forge-lint: disable-next-line(unsafe-typecast) winnings <= uint48 amount * 35
-            stats.totalWon += uint128(winnings); // D6{USDC} net
-            stats.totalWonStakes += bet.amount; // D6{USDC} stake
+            account.totalWon += uint80(winnings); // D6{USDC} net
+            account.totalWonStakes += bet.amount; // D6{USDC} stake
 
             emit BetWon(betId, bet.player, payout);
         }

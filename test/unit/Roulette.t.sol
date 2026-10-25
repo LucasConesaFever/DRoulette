@@ -3,6 +3,7 @@ pragma solidity ^0.8.34;
 
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Roulette} from "src/Roulette.sol";
@@ -20,7 +21,7 @@ contract RouletteTest is BaseTest {
                                 CREDITS
     //////////////////////////////////////////////////////////////*/
     function testFuzz_DepositCredits_HeldByRoulette(uint256 amount) public {
-        amount = bound(amount, 1, 1e30);
+        amount = bound(amount, 1, type(uint96).max);
         uint256 vaultBefore = usdc.balanceOf(address(vault));
 
         _fundCredits(player1, amount);
@@ -31,6 +32,16 @@ contract RouletteTest is BaseTest {
         assertEq(usdc.balanceOf(address(vault)), vaultBefore, "vault must not receive player funds");
     }
 
+    function test_DepositCredits_RevertWhen_AboveUint96() public {
+        uint256 amount = uint256(type(uint96).max) + 1;
+        usdc.mint(player1, amount);
+        vm.startPrank(player1);
+        usdc.approve(address(roulette), amount);
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, amount));
+        roulette.depositCredits(amount);
+        vm.stopPrank();
+    }
+
     function test_DepositCredits_RevertWhen_Zero() public {
         vm.prank(player1);
         vm.expectRevert(Roulette.Roulette__InvalidAmount.selector);
@@ -38,7 +49,7 @@ contract RouletteTest is BaseTest {
     }
 
     function testFuzz_WithdrawCredits(uint256 deposited, uint256 withdrawn) public {
-        deposited = bound(deposited, 1, 1e30);
+        deposited = bound(deposited, 1, type(uint96).max);
         withdrawn = bound(withdrawn, 1, deposited);
         _fundCredits(player1, deposited);
 
@@ -52,7 +63,7 @@ contract RouletteTest is BaseTest {
     }
 
     function testFuzz_WithdrawCredits_RevertWhen_MoreThanBalance(uint256 deposited, uint256 extra) public {
-        deposited = bound(deposited, 1, 1e30);
+        deposited = bound(deposited, 1, type(uint96).max);
         extra = bound(extra, 1, 1e30);
         _fundCredits(player1, deposited);
 

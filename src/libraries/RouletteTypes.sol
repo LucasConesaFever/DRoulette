@@ -78,9 +78,17 @@ library RouletteTypes {
         uint120 lastRoundWagered; // D6{USDC} stakes placed in lastRoundId
         // slot 1: written by placeBet
         uint256 totalWagered; // D6{USDC}
-        // slot 2: written at settlement, winners only
-        uint128 totalWon; // D6{USDC} net: winnings, without the returned stake
-        uint128 totalWonStakes; // D6{USDC} stakes of winning bets
+    }
+
+    /**
+     * @notice A player's credits and win stats, in one slot so paying a winner is a single storage write
+     * @dev uint96 holds ~7.9e22 USDC and uint80 ~1.2e18 USDC, far above the USDC supply: the callback's
+     *      checked additions can't overflow.
+     */
+    struct PlayerAccount {
+        uint96 credits; // D6{credit} (= D6{USDC})
+        uint80 totalWon; // D6{USDC} net: winnings, without the returned stake
+        uint80 totalWonStakes; // D6{USDC} stakes of winning bets
     }
 
     /// @notice Player statistics as returned to callers
